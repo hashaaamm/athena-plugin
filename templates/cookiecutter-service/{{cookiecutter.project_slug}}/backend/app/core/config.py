@@ -1,7 +1,7 @@
 """Application settings.
 
 This module is the only place in the process that reads the environment.
-docs/rules/backend/fastapi-standards.md MUSTs it: `os.environ` does not appear anywhere else in
+The FastAPI standards MUST it: `os.environ` does not appear anywhere else in
 application code, because a stray read is invisible to config validation.
 """
 
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 {% endif %}{% if cookiecutter.use_sentry == "yes" %}
     # --- Observability ---------------------------------------------------
     #: Empty means no error tracking. That MUST be the local default —
-    #: docs/rules/observability/error-tracking-with-sentry.md.
+    #: ask Athena for the Sentry error-tracking rules.
     sentry_dsn: str = ""
     sentry_traces_sample_rate: float = 0.1
 {% endif %}

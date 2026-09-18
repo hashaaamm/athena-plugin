@@ -1,5 +1,5 @@
 # Single configuration file for the whole toolchain. No setup.cfg, no pytest.ini, no .flake8.
-# See docs/rules/backend/project-structure.md and docs/knowledge/tooling/python-backend.md
+# Ask Athena for the project structure rules and the Python backend tooling notes.
 
 [project]
 name = "{{ cookiecutter.project_slug }}"

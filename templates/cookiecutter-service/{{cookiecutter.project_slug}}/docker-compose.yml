@@ -1,5 +1,5 @@
 # The whole local stack. `just dev` from a clean clone must reach a running service in under five
-# minutes. See docs/rules/delivery/local-dev-and-command-runner.md
+# minutes. Ask Athena for the local development and command runner rules.
 #
 # This file is at the repository ROOT, not in backend/, because it orchestrates more than one
 # component: today the database and the backend, tomorrow the frontend alongside them. A compose

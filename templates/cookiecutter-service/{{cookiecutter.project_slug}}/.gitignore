@@ -15,7 +15,7 @@ dist/
 .vite/
 
 # Local environment. `.env.example` is tracked; `.env` never is.
-# See docs/11-security/03-secrets-management.md
+# Ask Athena for the secrets-management rules.
 .env
 .env.*
 !.env.example

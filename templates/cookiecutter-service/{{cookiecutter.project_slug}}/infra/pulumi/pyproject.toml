@@ -1,0 +1,49 @@
+# The stack's own Python project, separate from backend/. Pulumi runs the program from this
+# directory, so `config` and `components` are top-level modules and pytest needs the same root.
+#
+# The lockfile is not templated, for the same reason backend/uv.lock is not: a lockfile pinned when
+# the template was written is stale on the day it ships. Run `uv lock` here once after generating.
+[project]
+name = "{{ cookiecutter.project_slug }}-infra"
+version = "0.1.0"
+description = "Pulumi stack for {{ cookiecutter.project_name }}"
+requires-python = ">={{ cookiecutter.python_version }}"
+dependencies = [
+    "pulumi>=3.140",
+    "pulumi-gcp>=8.0",
+    "pulumi-random>=4.16",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py{{ cookiecutter.python_version.replace('.', '') }}"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "{{ cookiecutter.python_version }}"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["pulumi.*", "pulumi_gcp.*", "pulumi_random.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -ra"
+pythonpath = ["."]

@@ -6,6 +6,7 @@
   "python_version": "3.12",
   "gcp_project_id": "your-gcp-project",
   "gcp_region": "europe-west1",
+  "github_repository": "your-org/{{ cookiecutter.project_slug }}",
   "use_postgres": ["yes", "no"],
   "use_sentry": ["yes", "no"],
   "include_frontend": ["no", "yes"],

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Development image. Deliberately NOT multi-stage: it needs the toolchain, the dev dependency
 # group and a writable source tree. Source is bind-mounted by compose.
-# See docs/09-delivery/02-containerization.md
+# Ask Athena for the containerization rules.
 
 ARG PYTHON_VERSION={{ cookiecutter.python_version }}
 FROM python:${PYTHON_VERSION}-slim-bookworm

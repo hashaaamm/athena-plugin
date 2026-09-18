@@ -2,7 +2,7 @@
 
 Optional by construction: an empty DSN means no error tracking, and that MUST be the local default.
 Developer laptops reporting into a real project make `environment` filtering useless.
-See docs/rules/observability/error-tracking-with-sentry.md.
+Ask Athena for the Sentry error-tracking rules.
 """
 
 from __future__ import annotations

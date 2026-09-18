@@ -3,7 +3,7 @@
 Three decisions worth knowing, because they are what make `pytest -n auto` safe:
 
 1. **A real Postgres, never SQLite.** A different dialect finds different bugs, and substituting
-   one is banned outright — docs/knowledge/tooling/approved-list.md.
+   one is banned outright. Ask Athena whether a library is approved.
 2. **One schema per xdist worker.** Workers are separate processes; without structural isolation
    they race on the same tables and the failures look random. The schema is selected by setting
    asyncpg's `search_path` on the connection itself, so every statement in that worker lands in it
@@ -14,7 +14,7 @@ Three decisions worth knowing, because they are what make `pytest -n auto` safe:
 
 The schema is built from ORM metadata rather than by running Alembic: it is faster, and it keeps
 the suite independent of migration history. `alembic check` in CI is what guards the two from
-drifting apart — see docs/rules/backend/testing.md.
+drifting apart. Ask Athena for the backend testing rules.
 {% else %}
 There is no database yet, so the fixtures are the app factory and an HTTP client over it. When a
 database arrives, this file grows per-worker schema isolation and per-test rollback — see the
@@ -139,7 +139,7 @@ async def client(settings: Settings, session: AsyncSession) -> AsyncIterator[Asy
     """An HTTP client bound to this test's transaction.
 
     The override is on the session dependency, which is the single seam
-    docs/rules/backend/project-structure.md intends — patching internals would couple the tests to
+    the project structure rules intend — patching internals would couple the tests to
     the wiring instead of the contract.
     """
     app = create_app(settings)

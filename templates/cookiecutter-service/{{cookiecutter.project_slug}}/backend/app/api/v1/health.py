@@ -3,7 +3,7 @@
 Liveness answers "is this process alive" and touches nothing, so a dependency's outage cannot get
 the container killed. Readiness answers "can this process serve correct answers", which is where a
 dependency check belongs. Cloud Run's startup probe reads the first; a load balancer reads the
-second. See docs/rules/backend/fastapi-standards.md.
+second. Ask Athena for the FastAPI standards.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Production image. Build context is backend/. See docs/09-delivery/02-containerization.md
+# Production image. Build context is backend/. Ask Athena for the containerization rules.
 #
 # Three things here are load-bearing and easy to break:
 #   1. The lockfile is copied BEFORE source, so editing app/ reuses the cached dependency layer.

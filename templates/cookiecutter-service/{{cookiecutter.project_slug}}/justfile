@@ -1,6 +1,6 @@
 # Root orchestrator. Recipe names are identical in every repository — an engineer or agent should
 # never have to read a justfile to know how to run the tests.
-# See docs/09-delivery/06-local-dev-and-command-runner.md
+# Ask Athena for the local development and command runner rules.
 #
 # This justfile owns the things that span components (the stack, CI's gate) and DELEGATES
 # everything language-specific to backend/justfile. When frontend/ arrives it gets its own
@@ -111,4 +111,34 @@ db-seed: _env
 # Build the production image
 build:
     {{backend}} build
+
+# --- Infrastructure ------------------------------------------------------
+#
+# Separate from `check` on purpose. `check` is the gate for application code and runs in Docker;
+# the stack has its own toolchain, its own workflow and its own gate, and pulling it into `check`
+# would make every backend change wait on a Pulumi install.
+
+# Unit-test the Pulumi components. No cloud credentials needed.
+infra-test:
+    cd infra/pulumi && uv run pytest -q
+
+# Lint and type-check the stack
+infra-lint:
+    cd infra/pulumi && uv run ruff check . && uv run ruff format --check . && uv run mypy .
+
+# --refresh on the next two recipes is load-bearing, not hygiene. CD updates the Cloud Run image
+# out of band; without a refresh, Pulumi's state still holds the previous image, ignore_changes has
+# nothing to preserve, and the next apply rolls the service back to it.
+
+# Show what `pulumi up` would change
+infra-preview STACK="dev":
+    cd infra/pulumi && uv run pulumi preview --stack {{STACK}} --refresh --diff
+
+# Apply the stack. Creates real, billable resources — read the preview first.
+infra-up STACK="dev":
+    cd infra/pulumi && uv run pulumi up --stack {{STACK}} --refresh
+
+# Copy stack outputs into GitHub repository variables, which un-gates cd.yml
+infra-sync-github STACK="dev":
+    ./infra/scripts/sync-github.sh {{STACK}}
 {% endraw %}

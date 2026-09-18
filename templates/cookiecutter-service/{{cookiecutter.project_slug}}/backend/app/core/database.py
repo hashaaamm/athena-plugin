@@ -1,7 +1,7 @@
 """Engine, session factory and the session lifecycle.
 
 Nothing commits except the session dependency. Repositories `flush()`.
-See docs/rules/backend/layered-architecture.md and AGENTS.md rule 5.
+Ask Athena for the layered architecture rules; AGENTS.md rule 5 says the same thing.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def create_engine(settings: Settings | None = None) -> AsyncEngine:
     other end has already closed, and asyncpg's named prepared statements break outright when a
     pooler multiplexes sessions onto shared server connections.
 
-    docs/rules/backend/database-and-migrations.md MUSTs both settings behind transaction pooling.
+    The database access and migrations rules MUST both settings behind transaction pooling.
     """
     settings = settings or get_settings()
     return create_async_engine(

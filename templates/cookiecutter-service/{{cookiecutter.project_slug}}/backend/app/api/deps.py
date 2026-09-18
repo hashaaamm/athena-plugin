@@ -1,6 +1,6 @@
 """THE object graph: repository -> service -> facade.
 
-docs/rules/backend/project-structure.md MUSTs that construction happens here and nowhere else,
+The project structure rules MUST that construction happens here and nowhere else,
 because this is the single boundary a test can override. A view that builds its own service cannot
 be overridden, and a graph assembled in three files cannot be reasoned about.
 

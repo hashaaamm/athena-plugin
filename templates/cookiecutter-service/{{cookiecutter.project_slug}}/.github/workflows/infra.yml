@@ -1,0 +1,89 @@
+# Infrastructure CI.
+#
+# The component tests run on every pull request and need no cloud credentials — that is most of the
+# argument for Pulumi over HCL, so it is the cheapest and most-run job here. The preview needs
+# cloud access and is gated on the stack having been applied at least once; its diff is posted to
+# the pull request, because a preview nobody reads is not a review.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. Nothing here may contain a cookiecutter variable; anything
+# project-specific comes from a repository variable instead.
+name: Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write        # required for Workload Identity Federation
+  pull-requests: write   # the preview comments its diff
+
+defaults:
+  run:
+    working-directory: infra/pulumi
+
+jobs:
+  static:
+    name: Lint, types and component tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: infra/pulumi/uv.lock
+      - run: uv sync --frozen        # fails loudly on a stale lockfile
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy .
+      - run: uv run pytest -q
+
+  preview:
+    name: Preview
+    runs-on: ubuntu-latest
+    needs: [static]
+    # Inert until the stack has been applied once and sync-github.sh has set the variables. A
+    # preview against a stack that does not exist fails on state, not on the change under review.
+    if: github.event_name == 'pull_request' && vars.WIF_PROVIDER != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: infra/pulumi/uv.lock
+      - run: uv sync --frozen
+
+      # Keyless. A downloaded service-account JSON key is a long-lived credential in a file and is
+      # on the handbook's banned list. Pin this to a digest rather than `@v2` before you rely on
+      # the pipeline: the house rule is a released major at minimum, and a pinned digest for
+      # anything that handles credentials.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: pulumi/actions@v6
+        with:
+          command: preview
+          stack-name: dev
+          work-dir: infra/pulumi
+          # Load-bearing, not hygiene. CD updates the Cloud Run image out of band; without a
+          # refresh Pulumi's state still holds the previous image, `ignore_changes` has nothing to
+          # preserve, and the preview proposes rolling the service back to it.
+          refresh: true
+          # A destructive change must be visible in review, not discovered in apply output.
+          comment-on-pr: true
+          diff: true

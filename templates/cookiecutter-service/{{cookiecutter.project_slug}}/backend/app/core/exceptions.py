@@ -2,7 +2,7 @@
 
 Layers below the transport raise these. Nothing below `app/api` knows what an HTTP status code is —
 a service must be callable from a worker, a CLI or a test with no HTTP stack anywhere.
-See docs/rules/backend/fastapi-standards.md and the errors-and-logging topic in backlog.md.
+Ask Athena for the FastAPI standards and for how errors and logging are handled.
 """
 
 from __future__ import annotations

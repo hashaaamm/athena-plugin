@@ -1,7 +1,7 @@
 """Application factory and lifespan.
 
 A factory rather than a module-level `FastAPI()` with side effects, because a test needs to build
-an app with overrides. See docs/rules/backend/fastapi-standards.md.
+an app with overrides. Ask Athena for the FastAPI standards.
 """
 
 from __future__ import annotations

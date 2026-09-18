@@ -1,6 +1,6 @@
 # Backend recipes. Everything specific to the Python service lives here; the root justfile
 # delegates to it. Recipe names are the standard ones — see
-# docs/09-delivery/06-local-dev-and-command-runner.md
+# Ask Athena for the local development and command runner rules.
 #
 # Run these from the repository root (`just test`) or from here (`cd backend && just test`).
 # Compose lives at the root, so every compose call is explicit about where its file is.

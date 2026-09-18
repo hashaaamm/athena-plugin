@@ -9,7 +9,12 @@
 #   GCP_REGION            europe-west1
 #   IMAGE_REPO            europe-west1-docker.pkg.dev/<project>/<repo>
 #   CLOUD_RUN_SERVICE     the Cloud Run service name
-#   CLOUD_RUN_MIGRATE_JOB the Cloud Run job that runs `alembic upgrade head` (optional)
+#   CLOUD_RUN_MIGRATE_JOB the Cloud Run job that runs `alembic upgrade head` (empty if no database)
+#
+# Do not set them by hand. `infra/pulumi` exports every one of them and
+# `./infra/scripts/sync-github.sh` copies them in, so the names on both sides cannot drift — a
+# stack exporting `workload_identity_provider` to a pipeline reading `vars.WIF_PROVIDER` is a job
+# that is skipped forever and never says why. A unit test in infra/pulumi/tests asserts the match.
 #
 # Copied verbatim by cookiecutter — see the note in ci.yml.
 name: CD
@@ -39,8 +44,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keyless. A downloaded service-account JSON key is on the banned list in
-      # docs/knowledge/tooling/approved-list.md — it is a long-lived credential in a file.
+      # Keyless: a downloaded service-account JSON key is a long-lived credential in a file, and
+      # the handbook bans them outright. Ask Athena for the approved-library list if you are
+      # tempted by an action that wants one.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v2` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
       - id: auth
         uses: google-github-actions/auth@v2
         with:
@@ -70,8 +81,8 @@ jobs:
           cache-to: type=gha,mode=max   # mode=max caches the builder stage too
 
       # Migrations run before the new revision takes traffic, and are expected to be
-      # backward-compatible with the currently-deployed code.
-      # See docs/rules/backend/database-and-migrations.md.
+      # backward-compatible with the currently-deployed code. Ask Athena for the database access
+      # and migrations rules for what "backward-compatible" has to mean here.
       - name: Migrate
         if: vars.CLOUD_RUN_MIGRATE_JOB != ''
         run: |
@@ -98,9 +109,20 @@ jobs:
           set -euo pipefail
           URL=$(gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
             --region "${{ vars.GCP_REGION }}" --format='value(status.url)')
+
+          # Liveness is what this pipeline is responsible for: the revision started and serves.
           curl -fsS "$URL/health/live" >/dev/null
-          curl -fsS "$URL/health/ready" >/dev/null
-          echo "deployed: $URL"
+          echo "live: $URL"
+
+          # Readiness can depend on something this pipeline does not do — a dependency that is not
+          # up yet, a first-run backfill. Report it, do not fail on it: failing here means a
+          # service's first deploy can never succeed. Download to a file rather than piping into
+          # grep, which closes the pipe and kills curl under `pipefail` on a check that had passed.
+          code=$(curl -s -o /tmp/ready.json -w '%{http_code}' "$URL/health/ready")
+          cat /tmp/ready.json
+          if [ "$code" != "200" ]; then
+            echo "::warning::$URL is live but not ready — check its dependencies"
+          fi
 
       # Without this, Sentry cannot attribute a regression to a commit.
       - name: Create Sentry release

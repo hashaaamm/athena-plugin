@@ -1,7 +1,7 @@
 """The example resource. Rename it, or delete it once you have a real one.
 
-Copying this file end to end and renaming is the intended way to add a resource — see
-docs/rules/backend/project-structure.md.
+Copying this file end to end and renaming is the intended way to add a resource. Ask Athena
+for the project structure rules.
 """
 
 from __future__ import annotations

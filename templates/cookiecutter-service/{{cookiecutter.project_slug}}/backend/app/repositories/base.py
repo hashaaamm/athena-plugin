@@ -2,7 +2,7 @@
 
 Repositories `flush()`; they never `commit()`. `flush()` is what makes generated ids and constraint
 violations surface inside the caller's transaction, while it can still be rolled back.
-See docs/rules/backend/layered-architecture.md and AGENTS.md rule 5.
+Ask Athena for the layered architecture rules; AGENTS.md rule 5 says the same thing.
 """
 
 from __future__ import annotations

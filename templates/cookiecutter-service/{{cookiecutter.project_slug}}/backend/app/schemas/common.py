@@ -2,7 +2,7 @@
 
 The error body is a contract like any other: one shape for every failure, so a generated client
 has one thing to handle instead of per-endpoint improvisation.
-See docs/rules/backend/fastapi-standards.md.
+Ask Athena for the FastAPI standards.
 """
 
 from __future__ import annotations

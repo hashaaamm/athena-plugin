@@ -1,4 +1,4 @@
-# Build context size is build time. See docs/09-delivery/02-containerization.md
+# Build context size is build time. Ask Athena for the containerization rules.
 .git
 .gitignore
 .venv

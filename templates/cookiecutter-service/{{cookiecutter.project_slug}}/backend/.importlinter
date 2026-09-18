@@ -1,5 +1,5 @@
 # Enforces unidirectional data flow mechanically, so review does not have to.
-# See docs/03-backend/01-layered-architecture.md and adr/0004-facade-layer-in-fastapi-services.md
+# Ask Athena for the layered architecture rules, and for the ADR behind the facade layer.
 #
 # Run with: lint-imports   (wired into `just lint`, and the third gate in CI)
 

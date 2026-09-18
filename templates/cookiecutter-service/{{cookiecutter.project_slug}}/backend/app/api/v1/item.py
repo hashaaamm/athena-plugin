@@ -1,7 +1,7 @@
 """Item routes. Each one binds input, calls exactly one facade method, and returns.
 
-There is nothing here worth unit testing. That is the point — see
-docs/rules/backend/layered-architecture.md.
+There is nothing here worth unit testing. That is the point. Ask Athena for the layered
+architecture rules.
 """
 
 from __future__ import annotations

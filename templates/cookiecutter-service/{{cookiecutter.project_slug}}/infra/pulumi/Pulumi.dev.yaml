@@ -1,0 +1,31 @@
+# The dev stack. Cheapest viable configuration at every layer.
+#
+# `pulumi stack init dev --secrets-provider=gcpkms://...` records `secretsprovider` and
+# `encryptedkey` in this file alongside the configuration below. The bootstrap script prints the
+# exact command with the key it created.
+config:
+  {{ cookiecutter.project_slug }}:project: {{ cookiecutter.gcp_project_id }}
+  {{ cookiecutter.project_slug }}:region: {{ cookiecutter.gcp_region }}
+  {{ cookiecutter.project_slug }}:environment: dev
+  # Every resource name is built from this, so it is not decoration: changing it renames the
+  # Cloud Run service, the registry repository and the service accounts.
+  {{ cookiecutter.project_slug }}:slug: {{ cookiecutter.project_slug }}
+  # Workload Identity Federation is scoped to exactly this repository. Anything else here means
+  # any repository on GitHub can assume the CI identity.
+  {{ cookiecutter.project_slug }}:githubRepository: {{ cookiecutter.github_repository }}
+  # Scaling to zero is the single biggest cost lever: an idle service costs nothing. Raise the
+  # minimum only when a measured cold start is the problem.
+  {{ cookiecutter.project_slug }}:minInstances: "0"
+  {{ cookiecutter.project_slug }}:maxInstances: "4"
+{%- if cookiecutter.use_postgres == "yes" %}
+  # Cloud SQL. Shared-core with 10 GB of HDD is the floor for a managed Postgres on GCP, and it is
+  # the only standing charge in this stack.
+  {{ cookiecutter.project_slug }}:databaseTier: db-f1-micro
+  {{ cookiecutter.project_slug }}:databaseDiskGb: "10"
+{%- endif %}
+{%- if cookiecutter.use_sentry == "yes" %}
+  # Flip to "true" after `gcloud secrets versions add {{ cookiecutter.project_slug }}-sentry-dsn-dev --data-file=-`.
+  # Until then the container is empty, and mounting an empty container fails the deploy rather than
+  # starting the service without error tracking.
+  {{ cookiecutter.project_slug }}:sentryDsnSet: "false"
+{%- endif %}

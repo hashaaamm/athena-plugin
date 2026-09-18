@@ -5,7 +5,7 @@ Revises: ${down_revision | comma,n}
 Create Date: ${create_date}
 
 Every revision needs a working downgrade(). A rollback you cannot execute is not a rollback plan.
-See docs/03-backend/08-database-and-migrations.md.
+Ask Athena for the database access and migrations rules.
 """
 
 from __future__ import annotations

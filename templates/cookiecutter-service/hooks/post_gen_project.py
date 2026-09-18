@@ -8,10 +8,19 @@ in one place, by a rule you can read.
 from __future__ import annotations
 
 import shutil
+import stat
 import sys
 from pathlib import Path
 
 PROJECT = Path.cwd()
+
+#: Scripts a human runs directly. Cookiecutter writes rendered files with the default mode, so the
+#: executable bit has to be set here or `./infra/bootstrap/state-bucket.sh` fails with "permission
+#: denied" on the first command of the whole deployment sequence.
+EXECUTABLE = (
+    "infra/bootstrap/state-bucket.sh",
+    "infra/scripts/sync-github.sh",
+)
 
 INCLUDE_FRONTEND = "{{ cookiecutter.include_frontend }}" == "yes"
 USE_POSTGRES = "{{ cookiecutter.use_postgres }}" == "yes"
@@ -59,6 +68,14 @@ def main() -> None:
             "backend/tests/test_item_api.py",
             "backend/tests/test_item_service.py",
         )
+        # No database means nothing to provision one for. The rest of the stack is unchanged:
+        # a service, a registry, two identities and the secrets it reads.
+        _remove("infra/pulumi/components/database.py")
+
+    for relative in EXECUTABLE:
+        target = PROJECT / relative
+        if target.exists():
+            target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     sys.stdout.write(
         "\n"
@@ -71,6 +88,10 @@ def main() -> None:
         "    just dev\n"
         "\n"
         "  Then: just check\n"
+        "\n"
+        "  Deploying is a separate sequence and it starts on your machine, not in CI.\n"
+        f"  Read {SLUG}/infra/README.md before running anything under infra/: the first\n"
+        "  command there creates cloud resources and costs money.\n"
         "\n"
     )
 

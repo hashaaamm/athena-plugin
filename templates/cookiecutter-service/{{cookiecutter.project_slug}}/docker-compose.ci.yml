@@ -1,6 +1,6 @@
 # Test stack. Mirrors CI exactly, so `just test` and the pipeline cannot disagree.
 # The database is disposable, so it is tuned purely for speed: tmpfs plus fsync off typically
-# halves suite time on write-heavy suites. See docs/rules/delivery/containerization.md
+# halves suite time on write-heavy suites. Ask Athena for the containerization rules.
 
 name: {{ cookiecutter.project_slug }}-ci
 

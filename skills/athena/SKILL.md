@@ -120,7 +120,7 @@ Reach for these when you already know which question you are asking.
 | `athena_knowledge` | "What must I keep in mind about X?" Synthesis, not passages. |
 | `athena_route` | "I do not know where to start." Returns the category and the next call, no content. |
 | `athena_get` | Read one thing in full, by redeeming a reference you were given. |
-| `athena_feedback` | Report that guidance was wrong — the moment it fails, not at the end of the run. |
+| `athena_feedback` | Report that guidance was wrong, or that it was never there — the moment it happens, not at the end of the run. |
 
 ## When Athena asks instead of answering
 
@@ -132,7 +132,8 @@ Do not retry the same call, and do not pick one of the named options at random. 
 person the question, or answer it yourself from the repository — you can usually see which stack
 you are in — and call again with `framework`, `lang` or a narrower `need`.
 
-`gaps` is the opposite case and means the handbook has nothing. Say the guidance is missing.
+`gaps` is the opposite case and means the handbook has nothing. Say the guidance is missing, solve
+it yourself, and then report what was missing — see "Tell Athena what it did not have".
 
 ## What to do with what comes back
 
@@ -158,9 +159,66 @@ quote it, follow it unless your code has a reason not to, and say which. `draft`
 comment. References are opaque, they are issued to you, and they are the only way to point at a page.
 
 **Report a gap rather than filling it.** When a requirement comes back uncovered, say the guidance
-is missing. Do not infer a rule from an adjacent page, and never invent one.
+is missing. Do not infer a rule from an adjacent page, and never invent one. Then tell Athena —
+see below.
 
 **Never claim the handbook says something you did not retrieve.**
+
+## Tell Athena what it did not have
+
+The handbook only learns what is missing from it if somebody says so. You are the one who found
+out. **Do this without being asked, and without asking permission.**
+
+### The trigger
+
+All three of these, together:
+
+1. You asked Athena for something specific.
+2. It had nothing, or nothing that applied — an uncovered requirement, an empty `gaps`, a guide
+   that turned out to be about something else.
+3. **You went on and solved it anyway**, and your solution works.
+
+That third condition is the one that matters. Report at the moment you have the answer, not at the
+moment you notice the hole — because what you worked out is the most useful half of the report.
+
+```
+athena_feedback(
+  outcome="gap",
+  detail="how to wire a Pub/Sub push subscription to a Cloud Run service",
+  tried="Cloud Scheduler posting to an authenticated endpoint with an OIDC token",
+)
+```
+
+`detail` is required and must fit in **200 characters** — name the thing you could not find, in one
+line. `tried` is optional and it is the field a page gets written from. `task` (what you were
+doing) and `category` (`rule`, `guide`, `flow` or `knowledge`, if you have a view) are optional
+too. Nothing else. It costs you one call and you do not wait for it, read a result, or change your
+plan because of it — the answer is always some version of "carry on".
+
+### When not to
+
+- **You never asked.** A gap is a hole in what Athena returned. If you did not call it, you do not
+  know whether it has a page.
+- **It had an answer and you disagreed with it**, or it was stale, or its instructions were wrong.
+  Those are the other outcomes, and they take the page's `ref`.
+- **The thing is about this repository.** "Where does our OrderService live" is not a gap. Athena
+  holds engineering standards, not your code, and it is never going to have that page.
+- **You have not solved it yet.** Finish first. A report filed mid-struggle describes the
+  confusion rather than the answer.
+- **You already reported it this session.** Once per gap. Athena counts callers, so filing the
+  same thing five times looks like one caller who repeats themselves, not five who need the page.
+
+The failure mode to watch in yourself is over-reporting: every session touches something the
+handbook does not cover, because no handbook covers everything. Reserve this for the things that
+actually cost you time and that another engineer would plainly have wanted a page for. Two or
+three reports in a long session is a lot.
+
+### Keep it clean
+
+Everything you send is read by a person and stored. Write a summary, never a paste. No logs, no
+stack traces, no diffs, no file contents, no environment variables, no URLs from your repository,
+no customer names. If a sentence would be odd to say out loud in somebody else's standup, do not
+send it.
 
 ## Installing
 

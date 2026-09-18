@@ -1,7 +1,7 @@
 """Item business rules. The only place they live.
 
 Raises `AppError` subclasses, never `HTTPException`: this service must be callable from a worker or
-a CLI with no HTTP stack anywhere. See docs/rules/backend/layered-architecture.md.
+a CLI with no HTTP stack anywhere. Ask Athena for the layered architecture rules.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ class ItemService:
 
     async def create(self, *, name: str, description: str | None) -> Item:
         # Uniqueness is not schema validation: it needs the database, so it belongs here rather
-        # than in a Pydantic validator. See docs/rules/backend/layered-architecture.md.
+        # than in a Pydantic validator. Ask Athena for the layered architecture rules.
         if await self._items.get_by_name(name) is not None:
             raise ConflictError(f"An item named {name!r} already exists")
         return await self._items.create(name=name, description=description)

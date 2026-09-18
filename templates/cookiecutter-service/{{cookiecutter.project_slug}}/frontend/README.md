@@ -15,7 +15,7 @@ A placeholder. Nothing is built here yet — the directory exists so that adding
 
 ## Conventions
 
-The handbook's `docs/rules/frontend/` pages apply. The API client is generated from the backend's
+The handbook's frontend rules apply — ask Athena for them. The API client is generated from the backend's
 OpenAPI document — wire up a `just gen-api` recipe and run it on every API change, so a stale
 client is a compile error rather than a runtime surprise
-(`docs/rules/backend/project-structure.md` MUSTs it for monorepos).
+(the project structure rules MUST it for monorepos; ask Athena).
