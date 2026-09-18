@@ -1,11 +1,12 @@
 {
   "name": "engineering-athena",
   "displayName": "Engineering Athena",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Engineering intelligence on demand: the handbook's rules, guides, flows and knowledge, retrieved before you plan or write code.",
   "author": { "name": "Engineering Athena" },
   "homepage": "https://engineeringathena.com",
   "repository": "https://github.com/hashaaamm/athena-plugin",
+  "license": "MIT",
   "keywords": ["engineering", "architecture", "backend", "cloud", "standards", "mcp"],
   "logo": "assets/logo.svg",
   "skills": "./skills/",

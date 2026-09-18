@@ -10,7 +10,7 @@
       "source": "./",
       "displayName": "Engineering Athena",
       "description": "Rules, guides, flows and knowledge for the code you are about to write. Bundles the MCP server and the skill that teaches an agent when to ask it.",
-      "version": "0.4.0"
+      "version": "0.4.1"
     }
   ]
 }

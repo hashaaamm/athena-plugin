@@ -19,6 +19,10 @@ listing wants a name nobody else will claim.
 The handbook itself is not here. It is served through the MCP server, against the question you
 actually asked.
 
+The **Cursor Marketplace plugin** is the manifests, `mcp.json`, `skills/`, and `assets/`.
+`templates/` is a separate cookiecutter product in the same repository; Cursor does not load it.
+License is MIT. How the hosted MCP handles what an agent sends is in [PRIVACY.md](PRIVACY.md).
+
 ## Install
 
 Athena is two things in every client: an **MCP server** that answers questions, and a **file of
@@ -71,9 +75,9 @@ rsync -a --exclude .git --exclude templates \
 Then **Developer: Reload Window**, and confirm the skill and MCP server under Customize. Do not
 put a token in any file you copy.
 
-**Team Marketplace:** import this repository under Dashboard → Plugins & MCPs, then turn on
-**Enable Auto Refresh**. Cursor re-indexes at most every ten minutes; clients pick up the new
-commit on the next focus.
+**Team Marketplace:** this is a single plugin at the repository root (no
+`.cursor-plugin/marketplace.json`). Import the repo if your plan supports that, or copy it into
+`~/.cursor/plugins/local`. Official Marketplace listing uses the root `.cursor-plugin/plugin.json`.
 
 ### Either way
 
@@ -148,14 +152,15 @@ Defaults to `https://mcp.engineeringathena.com/mcp`.
 ## What is in here
 
 ```
+LICENSE                           MIT
+PRIVACY.md                        what the plugin and the hosted MCP do with your data
 .claude-plugin/marketplace.json   the Claude Code marketplace
 .claude-plugin/plugin.json        the Claude Code manifest, and its MCP server definition
-.cursor-plugin/marketplace.json   the Cursor marketplace listing for this repo
 .cursor-plugin/plugin.json        the Cursor manifest, logo, and install-time token variable
 assets/logo.svg                   the listing icon
 mcp.json                          the MCP server definition Cursor reads — placeholders only
 skills/athena/SKILL.md            the skill — both clients load this one file
-templates/cookiecutter-service/   the FastAPI service template
+templates/cookiecutter-service/   the FastAPI service template (not part of the Cursor plugin)
 ```
 
 And nothing else, on purpose. **This repository is a distribution channel, not a content channel.**

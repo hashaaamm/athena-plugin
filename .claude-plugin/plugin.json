@@ -1,11 +1,12 @@
 {
   "name": "athena",
   "description": "Rules, guides, flows and knowledge for the code you are about to write, retrieved from the Engineering Athena handbook before you plan or write it.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": {
     "name": "Engineering Athena"
   },
   "homepage": "https://engineeringathena.com",
+  "license": "MIT",
   "keywords": [
     "standards",
     "handbook",
