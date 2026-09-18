@@ -70,6 +70,45 @@ Then spawn one sub-agent per unit and have each call `athena_brief` for its own 
 every unit's brief yourself — that puts the whole flow in one context, which is what the split exists
 to prevent.
 
+## The request is the scope
+
+A flow covers a whole process. The person asked for part of it. **Do the part they asked for.**
+
+"Set up a Django app" reaches the React + Django flow, because that flow is where the Django
+knowledge lives. It is not permission to set up React, and it is not a reason to ask whether they
+would like React too. They told you what they wanted; treating that as an open question spends
+their turn re-answering it.
+
+So: read the scope out of the request, drop the units outside it, and get on with the rest.
+
+**Then check what you dropped was not load-bearing.** Every unit declares `produces`, and later
+units declare `requires`. A dropped unit whose output nothing needs is simply gone. A dropped unit
+whose output a later unit requires is different: that later unit now has an unmet requirement and
+needs adapting.
+
+In the Django case that is exactly what happens — the frontend unit produces `react-app`, and the
+infrastructure unit requires it because it declares two Cloud Run services. Dropping React means
+the infrastructure unit builds one service, not two.
+
+Say so in one line — "no frontend, so the stack declares one Cloud Run service rather than two" —
+and carry on. Do not silently emit a plan whose fourth unit cannot run, and do not turn it back
+into a question. A deviation the person can see is fine; one they discover at deploy time is not.
+
+Pass `already_done` for capabilities the repository genuinely has, so the flow drops those steps
+itself rather than you skipping them by hand.
+
+## Asking the person, when you must
+
+Sometimes a question is unavoidable: two pages fit equally and the repository does not say which,
+or a choice changes what gets written and nothing in the request implies it.
+
+Ask it as a **choice, not a blank**. Offer the concrete options you are actually deciding between
+and let the person pick one, using whatever affordance your client has for a structured choice
+rather than asking them to type the answer in prose. A free-text prompt makes the person guess
+what shape of answer you wanted, and then you parse their guess.
+
+Never ask more than one thing at once, and never ask about something the request already settled.
+
 ## The other tools
 
 Reach for these when you already know which question you are asking.
@@ -83,7 +122,7 @@ Reach for these when you already know which question you are asking.
 | `athena_get` | Read one thing in full, by redeeming a reference you were given. |
 | `athena_feedback` | Report that guidance was wrong — the moment it fails, not at the end of the run. |
 
-## When it asks instead of answers
+## When Athena asks instead of answering
 
 A response can carry `clarify` and no content. That is not a failure and not an empty result — it
 means two or more pages fit and picking one would be a guess the agent downstream cannot see.

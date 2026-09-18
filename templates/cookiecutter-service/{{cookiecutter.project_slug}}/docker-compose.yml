@@ -55,8 +55,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-only-not-a-secret}
       POSTGRES_DB: ${POSTGRES_DB:-{{ cookiecutter.project_slug.replace('-', '_') }}}
     ports:
-      # Bound to a non-default host port so two checkouts can run at once.
-      - "55432:5432"
+      # Overridable, because the host port is the one thing in this file that can collide with
+      # something outside the project. Two services generated from this template, or one alongside
+      # any other Postgres on the machine, otherwise fail to start with "port is already
+      # allocated" — which reads as a problem with the new project rather than with the port.
+      - "${POSTGRES_HOST_PORT:-55432}:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
