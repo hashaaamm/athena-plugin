@@ -3,35 +3,81 @@
 Rules, guides, flows and knowledge for the code you are about to write, retrieved before you plan
 or write it.
 
-This repository is how Athena is installed. It holds two things:
+This repository is how Athena is installed, in **Claude Code** and in **Cursor**. It holds three
+things:
 
-- a **plugin** carrying an MCP server that answers questions about engineering standards, and the
-  skill that teaches an agent when to ask. They ship together because neither works alone: a
-  server nobody calls does nothing, and a skill with nothing behind it is a paragraph of advice.
-- a **cookiecutter template** for a FastAPI service built to those standards.
+- a **plugin** for Claude Code, carrying the MCP server and the skill together;
+- a **rule file** for Cursor, carrying the same guidance, generated from that same skill;
+- a **cookiecutter template** for a FastAPI service built to the handbook's standards.
 
-The handbook itself is not here. It is served through the MCP server.
+The handbook itself is not here. It is served through the MCP server, against the question you
+actually asked.
 
 ## Install
 
+Athena is two things in every client: an **MCP server** that answers questions, and a **file of
+guidance** that makes the agent ask. Install one without the other and you have half a product — a
+server nobody calls, or a paragraph of advice with nothing behind it.
+
+Both clients are first-class. Pick yours.
+
+### Claude Code
+
+The plugin carries both halves, so this is two commands:
+
 ```bash
-# in Claude Code
 /plugin marketplace add hashaaamm/athena-plugin
 /plugin install athena@engineering-athena
 ```
 
-Then put your token where your shell will find it:
+Then put the token where the plugin can reach it — it declares `Bearer ${ATHENA_TOKEN}` and never
+holds the value itself, because this repository is public and your token is not:
 
 ```bash
 echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 ```
 
-Restart Claude Code. `/mcp` should list `athena`, and the agent should reach for it the next time
-you ask for a feature.
+### Cursor
 
-**Why an environment variable rather than the plugin holding the token.** The plugin is public and
-your token is not. It is read from the environment at connect time, so it is never written into a
-file in a repository — a credential in a tracked `.mcp.json` is a committed credential.
+Cursor has no plugin mechanism, so the two halves install separately.
+
+**The server** — add this to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "athena": {
+      "url": "https://mcp.engineeringathena.com/mcp",
+      "headers": { "Authorization": "Bearer ath_..." }
+    }
+  }
+}
+```
+
+The file in your **home directory**, not a `.cursor/mcp.json` inside a repository: the token goes
+in literally, and a token in a tracked file is a committed credential.
+
+**The guidance** — a rule file, from this repository:
+
+```bash
+mkdir -p .cursor/rules && curl -fsSL \
+  https://raw.githubusercontent.com/hashaaamm/athena-plugin/main/clients/cursor/athena.mdc \
+  -o .cursor/rules/athena.mdc
+```
+
+That is per-repository. For every repository instead, paste the same file's contents into
+**Settings → Rules → User Rules** and skip the `curl`. It is `alwaysApply: true` with no `globs`,
+because whether to consult the handbook is decided before anyone knows which files a change will
+touch — it is as true of a migration as of a Dockerfile.
+
+### Either way
+
+Restart the client. `/mcp` in Claude Code, or Settings → MCP in Cursor, should list `athena`, and
+the agent should reach for it the next time you ask for a feature.
+
+The rule file and the skill are the same guidance — the Cursor rule is generated from the skill by
+`clients/cursor/generate.py`, so the two clients cannot end up giving different answers to the same
+question.
 
 ## Getting a token
 
@@ -85,7 +131,9 @@ Defaults to `https://mcp.engineeringathena.com/mcp`.
 ```
 .claude-plugin/marketplace.json           the marketplace
 plugins/athena/.claude-plugin/plugin.json the plugin, and the MCP server definition
-plugins/athena/skills/athena/SKILL.md     the skill
+plugins/athena/skills/athena/SKILL.md     the skill — the source of the guidance
+clients/cursor/athena.mdc                 the Cursor rule, generated from that skill
+clients/cursor/generate.py                the generator
 templates/cookiecutter-service/           the FastAPI service template
 ```
 
@@ -96,5 +144,7 @@ handbook's rules, guides, flows and knowledge are delivered through the MCP serv
 be retrieved against the question you actually asked — publishing them as files would be a worse
 product and a bigger one.
 
-Both are authored in the handbook's own repository and copied here in one direction, so there is
-one source of truth rather than two copies drifting apart.
+The skill and the template are authored in the handbook's own repository and copied here in one
+direction. The Cursor rule is generated from the skill rather than written, for the same reason:
+two files that are supposed to say the same thing will not, and the disagreement is invisible until
+somebody gets different advice from the same product depending on which editor they opened.
