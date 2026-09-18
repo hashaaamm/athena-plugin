@@ -9,8 +9,12 @@ things:
 - a **plugin** for Claude Code, carrying the MCP server and the skill together;
 - a **cookiecutter template** for a FastAPI service built to the handbook's standards.
 
-Cursor installs the same two halves by hand and reads the same skill file, so there is only one
-copy of the guidance in here.
+The repository root is the plugin in both formats, which is what lets one `skills/` tree serve
+both clients rather than two copies of the same file disagreeing over time.
+
+The plugin is called `athena` to Claude Code and `engineering-athena` to Cursor. Deliberate:
+`/plugin install athena@engineering-athena` reads better than the alternative, and a marketplace
+listing wants a name nobody else will claim.
 
 The handbook itself is not here. It is served through the MCP server, against the question you
 actually asked.
@@ -41,43 +45,36 @@ echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 
 ### Cursor
 
-Cursor has no plugin mechanism, so the two halves install separately — but it reads the **same
-skill file**, so there is nothing to convert.
+Cursor reads plugins too, and this repository is one. Install it through **Settings → Customize →
+Plugins**, or Cursor's marketplace once the listing is live, and Cursor will ask for your token as
+part of the install.
 
-**The server** — add this to `~/.cursor/mcp.json`:
+That is the reason it is packaged as a *Cursor Plugin* rather than the portable Agent Plugin: the
+Cursor format can declare install-time **variables**, so the token is configured through Cursor and
+never written into a file in a repository. `mcp.json` refers to it as `${ATHENA_TOKEN}` and holds no
+value of its own.
 
-```json
-{
-  "mcpServers": {
-    "athena": {
-      "url": "https://mcp.engineeringathena.com/mcp",
-      "headers": { "Authorization": "Bearer ath_..." }
-    }
-  }
-}
-```
-
-The file in your **home directory**, not a `.cursor/mcp.json` inside a repository: the token goes
-in literally, and a token in a tracked file is a committed credential.
-
-**The skill** — one command:
-
-```bash
-mkdir -p .cursor/skills/athena && curl -fsSL \
-  https://raw.githubusercontent.com/hashaaamm/athena-plugin/main/plugins/athena/skills/athena/SKILL.md \
-  -o .cursor/skills/athena/SKILL.md
-```
-
-Byte for byte the file the Claude Code plugin ships. Not a port of it, not generated from it — the
-same file, so the two clients cannot be given different advice.
+`ATHENA_MCP_URL` is the second variable, and only matters if you self-host; it defaults to the
+hosted service.
 
 ### Either way
 
 Restart the client. `/mcp` in Claude Code, or Settings → MCP in Cursor, should list `athena`, and
 the agent should reach for it the next time you ask for a feature.
 
-Both clients read the same `SKILL.md`, so neither can end up giving a different answer to the same
-question.
+Both clients load the **same** `skills/athena/SKILL.md`. Not a port of it and not generated from
+it — one file, so neither client can be given advice the other was not.
+
+**To update**, in Claude Code:
+
+```bash
+/plugin marketplace update
+```
+
+In Cursor, update the plugin from the same Plugins screen you installed it on. Knowledge updates
+need neither: the handbook lives on the server, so standards and content change without anybody
+reinstalling anything. A plugin release is only needed when a *workflow* or the MCP contract
+changes.
 
 ## Getting a token
 
@@ -120,6 +117,9 @@ optional, each with the verification its guide gave for it.
 
 ## Pointing at your own instance
 
+Set `ATHENA_MCP_URL`. In Cursor it is a plugin variable you fill in at install time; in Claude Code
+it is an environment variable:
+
 ```bash
 export ATHENA_MCP_URL=https://your-host/mcp
 ```
@@ -129,10 +129,12 @@ Defaults to `https://mcp.engineeringathena.com/mcp`.
 ## What is in here
 
 ```
-.claude-plugin/marketplace.json           the marketplace
-plugins/athena/.claude-plugin/plugin.json the plugin, and the MCP server definition
-plugins/athena/skills/athena/SKILL.md     the skill — both clients read this one file
-templates/cookiecutter-service/           the FastAPI service template
+.claude-plugin/marketplace.json   the Claude Code marketplace
+.claude-plugin/plugin.json       the Claude Code manifest, and its MCP server definition
+.cursor-plugin/plugin.json       the Cursor manifest, and the install-time token variable
+mcp.json                         the MCP server definition Cursor reads
+skills/athena/SKILL.md           the skill — both clients load this one file
+templates/cookiecutter-service/  the FastAPI service template
 ```
 
 And nothing else, on purpose. **This repository is a distribution channel, not a content channel.**

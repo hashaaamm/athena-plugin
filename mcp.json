@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "athena": {
+      "url": "${ATHENA_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${ATHENA_TOKEN}"
+      }
+    }
+  }
+}

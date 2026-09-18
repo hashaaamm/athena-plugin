@@ -1,0 +1,27 @@
+{
+  "name": "engineering-athena",
+  "version": "0.3.0",
+  "description": "Engineering intelligence on demand: the handbook's rules, guides, flows and knowledge, retrieved before you plan or write code.",
+  "author": { "name": "Engineering Athena" },
+  "homepage": "https://engineeringathena.com",
+  "keywords": ["engineering", "architecture", "backend", "cloud", "standards"],
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "ATHENA_TOKEN": {
+        "type": "string",
+        "title": "Athena token",
+        "description": "Your personal access token, issued by whoever runs your Athena instance. Begins ath_."
+      },
+      "ATHENA_MCP_URL": {
+        "type": "string",
+        "title": "Athena MCP URL",
+        "description": "Only if you self-host. Defaults to the hosted service.",
+        "default": "https://mcp.engineeringathena.com/mcp"
+      }
+    },
+    "required": ["ATHENA_TOKEN"]
+  }
+}
