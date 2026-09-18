@@ -1,0 +1,115 @@
+# Gates run fastest-first, so a formatting error fails in thirty seconds rather than after a
+# six-minute test run. CI pipelines is a backlog topic in the handbook.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. That is the single most common way these templates break.
+# The consequence: nothing here may contain a cookiecutter variable. Anything project-specific
+# comes from a repository variable instead.
+name: CI
+
+on:
+  pull_request:
+    # Per-component filter. A README-only change should not run the Python suite.
+    # When frontend/ lands it gets frontend-ci.yml with its own paths filter, rather than more
+    # jobs here — two components in one workflow means each waits for the other's runner.
+    paths:
+      - 'backend/**'
+      - 'docker-compose*.yml'
+      - '.github/workflows/ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'docker-compose*.yml'
+      - '.github/workflows/ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  static:
+    name: Lint, types, contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --frozen        # fails loudly on a stale lockfile
+      - run: uv run ruff check app/ tests/
+      - run: uv run ruff format --check app/ tests/
+      - run: uv run mypy app/
+      - run: uv run lint-imports     # the layer contracts, mechanically
+      - name: Single migration head
+        run: uv run alembic check || test ! -d alembic
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: [static]
+    services:
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: test
+        ports: ['5432:5432']
+        # Service containers cannot take a `command`, so fsync stays on here; the compose overlay
+        # used locally does the tmpfs trick instead.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      ENVIRONMENT: test
+      JSON_LOGS: 'false'
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: '5432'
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: test
+      SENTRY_DSN: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pytest -n auto --dist=loadscope --cov=app --cov-report=term-missing
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    needs: [static]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pip-audit
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # full history, not just the diff
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

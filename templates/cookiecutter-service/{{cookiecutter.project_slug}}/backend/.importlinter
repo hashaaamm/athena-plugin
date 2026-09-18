@@ -1,0 +1,60 @@
+# Enforces unidirectional data flow mechanically, so review does not have to.
+# See docs/03-backend/01-layered-architecture.md and adr/0004-facade-layer-in-fastapi-services.md
+#
+# Run with: lint-imports   (wired into `just lint`, and the third gate in CI)
+
+[importlinter]
+root_package = app
+# Required because the contracts below name third-party packages.
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Unidirectional flow: api -> facades -> services -> repositories -> models
+type = layers
+layers =
+    app.api
+    app.facades
+    app.services
+    app.repositories
+    app.models
+{% if cookiecutter.use_postgres == "yes" %}
+[importlinter:contract:no-orm-outside-data-layer]
+name = ORM is confined to models and repositories
+type = forbidden
+source_modules =
+    app.api
+    app.facades
+    app.services
+forbidden_modules =
+    sqlalchemy
+# These layers legitimately *hold* ORM instances handed up from a repository, so an indirect import
+# is not a violation. What the contract bans is a query — `select(...)`, `session.execute(...)` —
+# written outside the data layer.
+allow_indirect_imports = true
+# One exception, and it is the session *handle*, not a query: `deps.py` is the composition root and
+# receives a session to pass to repositories. A second entry appearing in this list is a design
+# smell worth arguing about in review.
+ignore_imports =
+    app.api.deps -> sqlalchemy
+{% endif %}
+[importlinter:contract:no-http-types-in-domain]
+name = HTTP types never reach services or repositories
+type = forbidden
+source_modules =
+    app.services
+    app.repositories
+forbidden_modules =
+    fastapi
+    starlette
+allow_indirect_imports = true
+
+[importlinter:contract:core-is-independent]
+name = core/ does not depend on domain layers
+type = forbidden
+source_modules =
+    app.core
+forbidden_modules =
+    app.api
+    app.facades
+    app.services
+    app.repositories

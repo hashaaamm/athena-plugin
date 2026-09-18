@@ -1,0 +1,33 @@
+# Frontend recipes. Placeholders until there is an app here — they exist so the root justfile can
+# delegate today and nothing has to change when the real app lands.
+{% raw %}
+set shell := ["bash", "-uc"]
+
+# Show available recipes
+default:
+    @just --list
+
+# Start the dev server
+dev:
+    @echo "frontend/: nothing to run yet — see frontend/README.md"
+
+# Lint and type check
+lint:
+    @echo "frontend/: nothing to lint yet"
+
+# Apply formatting
+fmt:
+    @echo "frontend/: nothing to format yet"
+
+# Run the test suite
+test *ARGS:
+    @echo "frontend/: no tests yet {{ARGS}}"
+
+# Build the production bundle
+build:
+    @echo "frontend/: nothing to build yet"
+
+# Regenerate the API client from the backend's OpenAPI document
+gen-api:
+    @echo "frontend/: wire this to openapi-typescript against http://localhost:8000/openapi.json"
+{% endraw %}

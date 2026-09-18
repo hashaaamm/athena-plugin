@@ -1,0 +1,116 @@
+# Build, push and deploy the backend to Cloud Run.
+#
+# Inert until configured: every job is gated on `vars.WIF_PROVIDER`, so a freshly generated repo
+# has a reviewed deploy path that cannot fire by accident. Set the repository variables below and
+# it starts working — no edit to this file required.
+#
+#   WIF_PROVIDER          projects/…/workloadIdentityPools/…/providers/github
+#   DEPLOY_SA             deployer@<project>.iam.gserviceaccount.com
+#   GCP_REGION            europe-west1
+#   IMAGE_REPO            europe-west1-docker.pkg.dev/<project>/<repo>
+#   CLOUD_RUN_SERVICE     the Cloud Run service name
+#   CLOUD_RUN_MIGRATE_JOB the Cloud Run job that runs `alembic upgrade head` (optional)
+#
+# Copied verbatim by cookiecutter — see the note in ci.yml.
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/cd.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # required for Workload Identity Federation
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    if: vars.WIF_PROVIDER != ''
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless. A downloaded service-account JSON key is on the banned list in
+      # docs/knowledge/tooling/approved-list.md — it is a long-lived credential in a file.
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate to Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/docker/Dockerfile.prod
+          target: production
+          platforms: linux/amd64
+          push: true
+          # An immutable :sha tag, never :latest. A rollback is then a known image rather than a
+          # guess about what :latest pointed at last Tuesday.
+          tags: ${{ vars.IMAGE_REPO }}/${{ vars.CLOUD_RUN_SERVICE }}:${{ github.sha }}
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max   # mode=max caches the builder stage too
+
+      # Migrations run before the new revision takes traffic, and are expected to be
+      # backward-compatible with the currently-deployed code.
+      # See docs/rules/backend/database-and-migrations.md.
+      - name: Migrate
+        if: vars.CLOUD_RUN_MIGRATE_JOB != ''
+        run: |
+          set -euo pipefail
+          IMAGE="${{ vars.IMAGE_REPO }}/${{ vars.CLOUD_RUN_SERVICE }}:${{ github.sha }}"
+          gcloud run jobs update "${{ vars.CLOUD_RUN_MIGRATE_JOB }}" \
+            --image "$IMAGE" --region "${{ vars.GCP_REGION }}" --quiet
+          gcloud run jobs execute "${{ vars.CLOUD_RUN_MIGRATE_JOB }}" \
+            --region "${{ vars.GCP_REGION }}" --wait
+
+      # `update`, not `deploy`. The shape of the service — service account, secrets, the Cloud SQL
+      # attachment — belongs to infrastructure-as-code. This pipeline owns exactly one field: the
+      # image. Two tools writing the same resource is how a plan fills up with phantom drift.
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          gcloud run services update "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --image "${{ vars.IMAGE_REPO }}/${{ vars.CLOUD_RUN_SERVICE }}:${{ github.sha }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --quiet
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --region "${{ vars.GCP_REGION }}" --format='value(status.url)')
+          curl -fsS "$URL/health/live" >/dev/null
+          curl -fsS "$URL/health/ready" >/dev/null
+          echo "deployed: $URL"
+
+      # Without this, Sentry cannot attribute a regression to a commit.
+      - name: Create Sentry release
+        if: vars.SENTRY_ORG != ''
+        uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        with:
+          version: ${{ github.sha }}
+          environment: production
+          set_commits: auto

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# Node (frontend/, when it lands)
+node_modules/
+dist/
+.vite/
+
+# Local environment. `.env.example` is tracked; `.env` never is.
+# See docs/11-security/03-secrets-management.md
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

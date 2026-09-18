@@ -1,0 +1,17 @@
+# Fast, deterministic checks only. Type checking and tests belong in `just check` and CI —
+# a slow hook gets bypassed with --no-verify, and then so do the useful ones.
+# See docs/rules/delivery/local-dev-and-command-runner.md
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.23.1
+    hooks:
+      - id: gitleaks

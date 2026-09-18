@@ -1,0 +1,110 @@
+# Root orchestrator. Recipe names are identical in every repository — an engineer or agent should
+# never have to read a justfile to know how to run the tests.
+# See docs/09-delivery/06-local-dev-and-command-runner.md
+#
+# This justfile owns the things that span components (the stack, CI's gate) and DELEGATES
+# everything language-specific to backend/justfile. When frontend/ arrives it gets its own
+# justfile and `check` gains one line — nothing here is restructured.
+{% raw %}
+set shell := ["bash", "-uc"]
+
+compose := "docker compose"
+ci      := "docker compose -f docker-compose.ci.yml"
+backend := "just --justfile backend/justfile --working-directory backend"
+{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}frontend := "just --justfile frontend/justfile --working-directory frontend"
+{% endraw %}{% endif %}{% raw %}
+# `just` defaults the working directory to the justfile's own directory, so backend recipes run
+# from backend/ exactly as they would if you cd'd there. Stated explicitly rather than inherited.
+
+# Show available recipes
+default:
+    @just --list
+
+# --- The stack -----------------------------------------------------------
+
+# Start the full local stack with hot reload
+dev: _env
+    {{compose}} up --build
+
+# Stop the stack and remove volumes
+down:
+    {{compose}} down -v
+    -{{ci}} down -v
+
+# Tail logs for a service (default: backend)
+logs SERVICE="backend":
+    {{compose}} logs -f {{SERVICE}}
+
+# Open a shell in the backend container
+shell: _env
+    {{compose}} run --rm dev-runner bash
+
+# Create .env on first run. `just dev` from a clean clone must not need a manual step.
+_env:
+    @test -f .env || (cp .env.example .env && echo "created .env from .env.example")
+
+# --- Quality -------------------------------------------------------------
+
+# Everything CI runs, in CI's order. If this passes, the pipeline passes.
+check: lint test
+
+# Lint, format check, type check and layer contracts, for every component
+lint:
+    {{backend}} lint
+{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} lint
+{% endraw %}{% endif %}{% raw %}
+
+# Apply formatting and safe autofixes, for every component
+fmt:
+    {{backend}} fmt
+{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} fmt
+{% endraw %}{% endif %}{% raw %}
+
+# Run the full test suite in parallel
+test *ARGS:
+    {{backend}} test {{ARGS}}
+
+# Run one test file or node, verbose and fail-fast
+test-one TARGET:
+    {{backend}} test-one {{TARGET}}
+
+# Dependency vulnerability scan
+audit:
+    {{backend}} audit
+
+# --- Database ------------------------------------------------------------
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# Apply all migrations
+db-migrate: _env
+    {{backend}} db-migrate
+
+# Create a new revision from model changes
+db-revision MESSAGE: _env
+    {{backend}} db-revision "{{MESSAGE}}"
+
+# Roll back one revision
+db-rollback: _env
+    {{backend}} db-rollback
+
+# Verify a single linear migration history
+db-check: _env
+    {{backend}} db-check
+
+# Drop and recreate the local database, then migrate and seed
+db-reset: _env
+    {{compose}} down -v db
+    {{compose}} up -d db
+    @until {{compose}} exec -T db pg_isready >/dev/null 2>&1; do sleep 1; done
+    just db-migrate
+    just db-seed
+
+# Load development seed data
+db-seed: _env
+    {{backend}} db-seed
+{% endraw %}{% endif %}{% raw %}
+# --- Build ---------------------------------------------------------------
+
+# Build the production image
+build:
+    {{backend}} build
+{% endraw %}

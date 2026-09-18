@@ -1,0 +1,112 @@
+# Backend recipes. Everything specific to the Python service lives here; the root justfile
+# delegates to it. Recipe names are the standard ones — see
+# docs/09-delivery/06-local-dev-and-command-runner.md
+#
+# Run these from the repository root (`just test`) or from here (`cd backend && just test`).
+# Compose lives at the root, so every compose call is explicit about where its file is.
+{% raw %}
+set shell := ["bash", "-uc"]
+
+# Recipes run from backend/. The compose files live at the repository root because they orchestrate
+# the whole stack; Compose resolves build contexts and `env_file` relative to the file itself, so
+# pointing at them from here needs no other adjustment.
+compose := "docker compose -f ../docker-compose.yml"
+ci      := "docker compose -f ../docker-compose.ci.yml"
+run     := "docker compose -f ../docker-compose.yml run --rm --build dev-runner"
+
+# Show available recipes
+default:
+    @just --list
+
+# --- Quality -------------------------------------------------------------
+
+# Everything CI runs, in CI's order. If this passes, the pipeline passes.
+check: lint test
+
+# Lint, format check, type check and layer contracts
+lint:
+    {{run}} ruff check app/ tests/
+    {{run}} ruff format --check app/ tests/
+    {{run}} mypy app/
+    {{run}} lint-imports
+
+# Apply formatting and safe autofixes
+fmt:
+    {{run}} ruff check --fix app/ tests/
+    {{run}} ruff format app/ tests/
+
+# Run the full test suite in parallel
+test *ARGS:
+    {{ci}} run --rm --build test-runner pytest -n auto --dist=loadscope {{ARGS}}
+    {{ci}} down -v
+
+# Run one test file or node, verbose and fail-fast
+test-one TARGET:
+    {{ci}} run --rm --build test-runner pytest -x -vv {{TARGET}}
+
+# Dependency vulnerability scan
+audit:
+    {{run}} pip-audit
+
+# The one recipe that legitimately uses a host tool: there is no image to run it in until it exists.
+# Resolve the lockfile: run once after generating, and after any dependency edit
+lock:
+    uv lock
+
+# Open a shell in the backend container
+shell:
+    {{compose}} run --rm dev-runner bash
+
+# Tail backend logs
+logs:
+    {{compose}} logs -f backend
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# --- Database ------------------------------------------------------------
+
+# Apply all migrations
+db-migrate:
+    {{compose}} run --rm backend alembic upgrade head
+
+# Create a new revision from model changes
+db-revision MESSAGE:
+    {{compose}} run --rm backend alembic revision --autogenerate -m "{{MESSAGE}}"
+
+# Roll back one revision
+db-rollback:
+    {{compose}} run --rm backend alembic downgrade -1
+
+# Verify a single linear history — two heads means someone's migration silently never ran
+db-check:
+    {{compose}} run --rm backend alembic check
+
+# Resolve multiple heads after a merge
+db-merge-heads:
+    {{compose}} run --rm backend alembic merge heads -m "merge_heads"
+
+# Drop and recreate the local database, then migrate and seed
+db-reset:
+    {{compose}} down -v db
+    {{compose}} up -d db
+    @until {{compose}} exec -T db pg_isready >/dev/null 2>&1; do sleep 1; done
+    just db-migrate
+    just db-seed
+
+# Load development seed data
+db-seed:
+    {{compose}} run --rm backend python -m app.seed
+{% endraw %}{% endif %}{% raw %}
+# --- Build ---------------------------------------------------------------
+
+# Build the production image
+build:
+    DOCKER_BUILDKIT=1 docker build \
+        --platform=linux/amd64 \
+        -f docker/Dockerfile.prod \
+        --target production \
+        --build-arg GIT_SHA=$(git rev-parse --short HEAD) \
+        -t $(just _image) \
+        .
+
+_image:
+    @echo "{{env_var_or_default('IMAGE_REPO', 'local')}}/$(basename $(dirname $PWD)):$(git rev-parse --short HEAD)"
+{% endraw %}

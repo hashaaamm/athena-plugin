@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1.7
+# Production image. Build context is backend/. See docs/09-delivery/02-containerization.md
+#
+# Three things here are load-bearing and easy to break:
+#   1. The lockfile is copied BEFORE source, so editing app/ reuses the cached dependency layer.
+#      Reversing those two COPY lines is the single most common reason a Python image takes four
+#      minutes to build.
+#   2. The production stage starts from python:-slim again, NOT from `base` — inheriting `base`
+#      would ship build-essential, a compiler and ~600 MB of attack surface to production.
+#   3. Nothing is bind-mounted in. The image is the artifact; a mount would make it a lie.
+
+ARG PYTHON_VERSION={{ cookiecutter.python_version }}
+
+# --- base: system dependencies shared by build and runtime ----------------
+FROM python:${PYTHON_VERSION}-slim-bookworm AS base
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- builder: resolve dependencies into a venv ----------------------------
+FROM base AS builder
+WORKDIR /app
+COPY --from=ghcr.io/astral-sh/uv:0.8.11 /uv /usr/local/bin/uv
+COPY pyproject.toml uv.lock ./
+# `--frozen` fails on a stale lockfile rather than silently resolving something new.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+COPY app/ ./app/
+{%- if cookiecutter.use_postgres == "yes" %}
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
+{%- endif %}
+
+# --- production: runtime only --------------------------------------------
+FROM python:${PYTHON_VERSION}-slim-bookworm AS production
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/app/.venv/bin:$PATH"
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+        curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid appuser --create-home appuser
+
+WORKDIR /app
+COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
+COPY --from=builder --chown=appuser:appuser /app/app /app/app
+{%- if cookiecutter.use_postgres == "yes" %}
+COPY --from=builder --chown=appuser:appuser /app/alembic /app/alembic
+COPY --from=builder --chown=appuser:appuser /app/alembic.ini /app/alembic.ini
+{%- endif %}
+
+# The immutable build SHA, so /health/ready can say which revision is answering and Sentry can
+# attribute a regression to a commit.
+ARG GIT_SHA=""
+ENV GIT_SHA=${GIT_SHA}
+
+USER appuser
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:8080/health/live || exit 1
+
+# Worker count comes from WEB_CONCURRENCY, which gunicorn reads natively, so the platform sizes it
+# rather than the image. Two is the default because these containers usually run on a single shared
+# vCPU, where more workers means more copies of a heavy import graph competing for one core.
+ENV WEB_CONCURRENCY=2 \
+    PORT=8080
+
+# Shell form with `exec` so $PORT expands — Cloud Run assigns the port and the container MUST
+# listen on it — while gunicorn still becomes PID 1 and receives SIGTERM directly.
+# `--graceful-timeout` gives in-flight requests time to finish during a revision swap.
+CMD ["sh", "-c", "exec gunicorn app.main:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --bind 0.0.0.0:${PORT} \
+    --timeout 60 \
+    --graceful-timeout 30 \
+    --access-logfile - \
+    --error-logfile -"]

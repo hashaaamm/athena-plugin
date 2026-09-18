@@ -1,0 +1,79 @@
+# The whole local stack. `just dev` from a clean clone must reach a running service in under five
+# minutes. See docs/rules/delivery/local-dev-and-command-runner.md
+#
+# This file is at the repository ROOT, not in backend/, because it orchestrates more than one
+# component: today the database and the backend, tomorrow the frontend alongside them. A compose
+# file per component cannot express "the frontend waits for the backend to be healthy".
+
+name: {{ cookiecutter.project_slug }}
+
+services:
+  backend: &backend
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.dev
+    env_file: .env
+    environment:
+      # Pinned here so a .env tuned for host access (localhost:5432) still works inside the
+      # container, where the database is reachable as db:5432.
+      {%- if cookiecutter.use_postgres == "yes" %}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      {%- endif %}
+      ENVIRONMENT: local
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      {%- if cookiecutter.use_postgres == "yes" %}
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      {%- endif %}
+      - ./backend/pyproject.toml:/app/pyproject.toml
+      # Needed by `lint-imports`, which is part of `just lint`.
+      - ./backend/.importlinter:/app/.importlinter
+    ports:
+      - "8000:8000"
+      - "5678:5678"   # debugpy
+    {%- if cookiecutter.use_postgres == "yes" %}
+    depends_on:
+      db:
+        condition: service_healthy
+    {%- endif %}
+
+  # Same image and same mounts, no server. Used by `just lint`, `just fmt`, `just db-*`.
+  # Keeping tooling in the image CI uses is what stops "passes locally, fails in CI".
+  dev-runner:
+    <<: *backend
+    ports: []
+    command: ["sleep", "infinity"]
+    profiles: ["tools"]
+{% if cookiecutter.use_postgres == "yes" %}
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-{{ cookiecutter.project_slug.replace('-', '_') }}}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-only-not-a-secret}
+      POSTGRES_DB: ${POSTGRES_DB:-{{ cookiecutter.project_slug.replace('-', '_') }}}
+    ports:
+      # Bound to a non-default host port so two checkouts can run at once.
+      - "55432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # `depends_on` alone does not wait for readiness; this is what makes it mean something.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-{{ cookiecutter.project_slug.replace('-', '_') }}}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  db-data:
+{% endif %}
+{%- if cookiecutter.include_frontend == "yes" %}
+# When frontend/ grows a real app, add it here — not in a second compose file:
+#
+#   frontend:
+#     build: { context: ./frontend }
+#     ports: ["5173:5173"]
+#     depends_on: { backend: { condition: service_started } }
+{%- endif %}

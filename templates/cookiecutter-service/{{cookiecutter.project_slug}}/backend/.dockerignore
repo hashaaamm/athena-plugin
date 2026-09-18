@@ -1,0 +1,20 @@
+# Build context size is build time. See docs/09-delivery/02-containerization.md
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.import_linter_cache
+.coverage
+htmlcov
+tests
+docs
+*.md
+!README.md
+.env
+.env.*

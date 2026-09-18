@@ -1,0 +1,121 @@
+# Single configuration file for the whole toolchain. No setup.cfg, no pytest.ini, no .flake8.
+# See docs/rules/backend/project-structure.md and docs/knowledge/tooling/python-backend.md
+
+[project]
+name = "{{ cookiecutter.project_slug }}"
+version = "0.1.0"
+description = "{{ cookiecutter.description }}"
+requires-python = ">={{ cookiecutter.python_version }}"
+dependencies = [
+    # --- Web ---
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "gunicorn>=23.0",
+    # --- Contracts + config ---
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    {%- if cookiecutter.use_postgres == "yes" %}
+    # --- Data ---
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    {%- endif %}
+    # --- Cross-cutting ---
+    "structlog>=24.4",
+    "orjson>=3.10",
+    "httpx>=0.28",
+    "tenacity>=9.0",
+    {%- if cookiecutter.use_sentry == "yes" %}
+    "sentry-sdk[fastapi{% if cookiecutter.use_postgres == "yes" %},sqlalchemy{% endif %}]>=2.19",
+    {%- endif %}
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.6",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "mypy>=1.13",
+    "ruff>=0.8",
+    "import-linter>=2.1",
+    "pip-audit>=2.7",
+    "debugpy>=1.8",
+]
+
+# This is an application, not a library. Nothing installs it as a package; uv manages the
+# environment and `app` is imported from the working directory.
+[tool.uv]
+package = false
+
+# --- Ruff: replaces black, isort, flake8, bandit, pyupgrade ---------------
+[tool.ruff]
+line-length = 100
+target-version = "py{{ cookiecutter.python_version.replace('.', '') }}"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "C4",          # comprehensions
+    "DTZ",         # naive datetimes — we store UTC
+    "T20",         # no print()
+    "SIM",         # simplify
+    "ARG",         # unused arguments
+    "PTH",         # use pathlib
+    "RUF",
+    "ASYNC",       # async correctness: blocking calls in async defs
+    "S",           # bandit security rules
+]
+ignore = [
+    "S101",        # assert is fine in tests
+    "B008",        # FastAPI Depends() in defaults is the documented pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "ARG"]
+"alembic/versions/*" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# --- mypy ----------------------------------------------------------------
+[tool.mypy]
+python_version = "{{ cookiecutter.python_version }}"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# --- pytest --------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Set explicitly: leaving it unset makes pytest-asyncio emit a deprecation warning, and
+# `filterwarnings = ["error"]` below turns that into a failing suite.
+asyncio_default_fixture_loop_scope = "function"
+addopts = "--strict-markers --strict-config -ra"
+filterwarnings = ["error"]
+
+# --- coverage ------------------------------------------------------------
+[tool.coverage.run]
+source = ["app"]
+omit = ["*/alembic/*", "*/__init__.py", "app/main.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]

@@ -3,12 +3,14 @@
 Rules, guides, flows and knowledge for the code you are about to write, retrieved before you plan
 or write it.
 
-This repository is the distribution: a plugin marketplace holding one plugin. The plugin carries
-two things that only work together — an **MCP server** that answers questions about engineering
-standards, and a **skill** that teaches an agent when to ask. A server nobody calls is a server
-that does nothing, and a skill with nothing behind it is a paragraph of advice.
+This repository is how Athena is installed. It holds two things:
 
-The handbook itself lives elsewhere and is not in this repository.
+- a **plugin** carrying an MCP server that answers questions about engineering standards, and the
+  skill that teaches an agent when to ask. They ship together because neither works alone: a
+  server nobody calls does nothing, and a skill with nothing behind it is a paragraph of advice.
+- a **cookiecutter template** for a FastAPI service built to those standards.
+
+The handbook itself is not here. It is served through the MCP server.
 
 ## Install
 
@@ -37,7 +39,24 @@ Every caller authenticates; there is no anonymous access. Ask whoever runs your 
 for a token. It is issued per person, which is what lets the service tell callers apart and what
 makes a reference issued to you resolve only for you.
 
+## The service template
+
+A FastAPI service laid out the way the handbook argues for: routers that call a facade, a facade
+that calls services, services that call repositories, and nothing reaching backwards. Alembic,
+Docker, CI and CD, a justfile, tests, and an `AGENTS.md` so an agent opening the repository knows
+the rules before it writes anything.
+
+```bash
+pipx install cookiecutter   # or: uv tool install cookiecutter
+cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service
+```
+
+It asks for a project name and derives the rest. `include_frontend` adds a React workspace;
+`use_postgres` and `use_sentry` drop the parts you are not using rather than leaving them stubbed.
+
 ## What you get
+
+
 
 Four categories, and the difference is what you do with each:
 
@@ -64,10 +83,18 @@ Defaults to `https://mcp.engineeringathena.com/mcp`.
 ## What is in here
 
 ```
-.claude-plugin/marketplace.json          the marketplace
+.claude-plugin/marketplace.json           the marketplace
 plugins/athena/.claude-plugin/plugin.json the plugin, and the MCP server definition
 plugins/athena/skills/athena/SKILL.md     the skill
+templates/cookiecutter-service/           the FastAPI service template
 ```
 
-The skill is authored in the handbook's own repository and synced here, so there is one source of
-truth for it rather than two copies drifting apart.
+And nothing else, on purpose. **This repository is a distribution channel, not a content channel.**
+What is here is what cannot be delivered any other way: a plugin has to be fetched from a
+marketplace, and `cookiecutter` works by cloning a git repository, so both need a public URL. The
+handbook's rules, guides, flows and knowledge are delivered through the MCP server, where they can
+be retrieved against the question you actually asked — publishing them as files would be a worse
+product and a bigger one.
+
+Both are authored in the handbook's own repository and copied here in one direction, so there is
+one source of truth rather than two copies drifting apart.

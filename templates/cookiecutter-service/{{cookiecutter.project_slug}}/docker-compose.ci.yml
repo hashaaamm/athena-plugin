@@ -1,0 +1,59 @@
+# Test stack. Mirrors CI exactly, so `just test` and the pipeline cannot disagree.
+# The database is disposable, so it is tuned purely for speed: tmpfs plus fsync off typically
+# halves suite time on write-heavy suites. See docs/rules/delivery/containerization.md
+
+name: {{ cookiecutter.project_slug }}-ci
+
+services:
+  test-runner:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.dev
+    environment:
+      ENVIRONMENT: test
+      JSON_LOGS: "false"
+      {%- if cookiecutter.use_postgres == "yes" %}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: test
+      {%- endif %}
+      {%- if cookiecutter.use_sentry == "yes" %}
+      SENTRY_DSN: ""   # never report from a test run
+      {%- endif %}
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      {%- if cookiecutter.use_postgres == "yes" %}
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      {%- endif %}
+      - ./backend/pyproject.toml:/app/pyproject.toml
+      - ./backend/.importlinter:/app/.importlinter
+    {%- if cookiecutter.use_postgres == "yes" %}
+    depends_on:
+      db:
+        condition: service_healthy
+    {%- endif %}
+    command: ["pytest", "-n", "auto", "--dist=loadscope"]
+{% if cookiecutter.use_postgres == "yes" %}
+  db:
+    image: postgres:16-alpine
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: >
+      postgres -c fsync=off
+               -c full_page_writes=off
+               -c synchronous_commit=off
+               -c max_connections=200
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+{% endif %}

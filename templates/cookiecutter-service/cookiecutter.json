@@ -1,0 +1,15 @@
+{
+  "project_name": "Example Service",
+  "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '-').replace('_', '-') }}",
+  "description": "A FastAPI service built to the Engineering Athena handbook.",
+  "author": "Your Name",
+  "python_version": "3.12",
+  "gcp_project_id": "your-gcp-project",
+  "gcp_region": "europe-west1",
+  "use_postgres": ["yes", "no"],
+  "use_sentry": ["yes", "no"],
+  "include_frontend": ["no", "yes"],
+  "_copy_without_render": [
+    ".github/workflows/*"
+  ]
+}
