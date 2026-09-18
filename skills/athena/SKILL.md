@@ -136,6 +136,16 @@ you are in — and call again with `framework`, `lang` or a narrower `need`.
 
 ## What to do with what comes back
 
+**Use what you were given; do not rebuild it.** When a step says to generate something from a
+template, generate it — run the command. Writing the same files by hand is not equivalent, and the
+difference is not effort: the template is what is consistent with the rules the guide cites, and a
+hand-built approximation passes review for correctness and fails it for convention. The same holds
+for a flow: work its units rather than inventing an order of your own.
+
+This is the failure mode to watch for in yourself. You will be holding a guide in context and it
+will feel faster to write the files directly than to shell out. It is faster, and it produces
+something plausible and subtly wrong, and nobody finds out until review.
+
 **Apply it to this repository.** The handbook does not know your code. Take what fits, say plainly
 what does not and why, and summarise for the person rather than pasting the response back at them.
 
