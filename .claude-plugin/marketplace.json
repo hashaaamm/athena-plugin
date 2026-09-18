@@ -1,0 +1,16 @@
+{
+  "name": "engineering-athena",
+  "owner": {
+    "name": "Engineering Athena"
+  },
+  "description": "The Engineering Athena handbook, served to coding agents over MCP.",
+  "plugins": [
+    {
+      "name": "athena",
+      "source": "./plugins/athena",
+      "displayName": "Engineering Athena",
+      "description": "Rules, guides, flows and knowledge for the code you are about to write. Bundles the MCP server and the skill that teaches an agent when to ask it.",
+      "version": "0.1.0"
+    }
+  ]
+}

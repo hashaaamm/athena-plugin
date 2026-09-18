@@ -1,0 +1,19 @@
+{
+  "name": "athena",
+  "description": "Rules, guides, flows and knowledge for the code you are about to write, retrieved from the Engineering Athena handbook before you plan or write it.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Engineering Athena"
+  },
+  "homepage": "https://engineeringathena.com",
+  "keywords": ["standards", "handbook", "code-review", "architecture", "mcp"],
+  "mcpServers": {
+    "athena": {
+      "type": "http",
+      "url": "${ATHENA_MCP_URL:-https://mcp.engineeringathena.com/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${ATHENA_TOKEN}"
+      }
+    }
+  }
+}
