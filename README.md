@@ -1,4 +1,4 @@
-# Engineering Athena — Claude Code plugin
+# Engineering Athena — agent plugin
 
 Rules, guides, flows and knowledge for the code you are about to write, retrieved before you plan
 or write it.
@@ -6,7 +6,7 @@ or write it.
 This repository is how Athena is installed, in **Claude Code** and in **Cursor**. It holds three
 things:
 
-- a **plugin** for Claude Code, carrying the MCP server and the skill together;
+- a **plugin** for both clients, carrying the MCP server and the skill together;
 - a **cookiecutter template** for a FastAPI service built to the handbook's standards.
 
 The repository root is the plugin in both formats, which is what lets one `skills/` tree serve
@@ -45,38 +45,35 @@ echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 
 ### Cursor
 
-Two halves, and for now they install by hand. The plugin packaging below is ready but the
-marketplace listing is not submitted yet, so this is the path that works today.
+The plugin is a Cursor Plugin: `.cursor-plugin/plugin.json`, `mcp.json`, `skills/athena/SKILL.md`,
+and the listing logo. Cursor asks for `ATHENA_TOKEN` at install time. The value is never in this
+repository.
 
-**The server** — `~/.cursor/mcp.json`:
+**From GitHub** (works today):
 
-```json
-{
-  "mcpServers": {
-    "athena": {
-      "url": "https://mcp.engineeringathena.com/mcp",
-      "headers": { "Authorization": "Bearer ath_..." }
-    }
-  }
-}
-```
+1. Open **Customize → Plugins**.
+2. Add from GitHub repository: `https://github.com/hashaaamm/athena-plugin`.
+3. Install **engineering-athena**.
+4. When Cursor prompts, paste your personal `ath_...` token. Leave the MCP URL on the default
+   unless you self-host.
 
-The file in your **home directory**, not a `.cursor/mcp.json` inside a repository: the token goes
-in literally, and a token in a tracked file is a committed credential.
+**Official Marketplace** (after review): same screen, search **Engineering Athena**, then Install.
+Submit the repo at [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish).
 
-**The skill** — one command, per repository:
+**Local development:**
 
 ```bash
-mkdir -p .cursor/skills/athena && curl -fsSL \
-  https://raw.githubusercontent.com/hashaaamm/athena-plugin/main/skills/athena/SKILL.md \
-  -o .cursor/skills/athena/SKILL.md
+mkdir -p ~/.cursor/plugins/local/engineering-athena
+rsync -a --exclude .git --exclude templates \
+  /path/to/athena-plugin/ ~/.cursor/plugins/local/engineering-athena/
 ```
 
-Byte for byte the file the Claude Code plugin loads. Re-run it to update.
+Then **Developer: Reload Window**, and confirm the skill and MCP server under Customize. Do not
+put a token in any file you copy.
 
-**Once the listing is live**, this becomes an install from Settings → Customize → Plugins, and
-Cursor will ask for the token itself rather than you pasting it into a file — the packaging in
-`.cursor-plugin/plugin.json` already declares it as a variable.
+**Team Marketplace:** import this repository under Dashboard → Plugins & MCPs, then turn on
+**Enable Auto Refresh**. Cursor re-indexes at most every ten minutes; clients pick up the new
+commit on the next focus.
 
 ### Either way
 
@@ -92,10 +89,11 @@ it — one file, so neither client can be given advice the other was not.
 /plugin marketplace update
 ```
 
-In Cursor, re-run the `curl` — or update the plugin from the Plugins screen once it is listed.
-Knowledge updates need neither: the handbook lives on the server, so standards and content change without anybody
-reinstalling anything. A plugin release is only needed when a *workflow* or the MCP contract
-changes.
+In Cursor, an official Marketplace or Team Marketplace install refreshes itself. A personal
+GitHub add can stay pinned to the commit you first imported — prefer the marketplace if you
+want updates. Knowledge updates need neither: the handbook lives on the server, so standards
+and content change without anybody reinstalling anything. A plugin release is only needed when
+a *workflow* or the MCP contract changes.
 
 ## Getting a token
 
@@ -151,11 +149,13 @@ Defaults to `https://mcp.engineeringathena.com/mcp`.
 
 ```
 .claude-plugin/marketplace.json   the Claude Code marketplace
-.claude-plugin/plugin.json       the Claude Code manifest, and its MCP server definition
-.cursor-plugin/plugin.json       the Cursor manifest, and the install-time token variable
-mcp.json                         the MCP server definition Cursor reads
-skills/athena/SKILL.md           the skill — both clients load this one file
-templates/cookiecutter-service/  the FastAPI service template
+.claude-plugin/plugin.json        the Claude Code manifest, and its MCP server definition
+.cursor-plugin/marketplace.json   the Cursor marketplace listing for this repo
+.cursor-plugin/plugin.json        the Cursor manifest, logo, and install-time token variable
+assets/logo.svg                   the listing icon
+mcp.json                          the MCP server definition Cursor reads — placeholders only
+skills/athena/SKILL.md            the skill — both clients load this one file
+templates/cookiecutter-service/   the FastAPI service template
 ```
 
 And nothing else, on purpose. **This repository is a distribution channel, not a content channel.**

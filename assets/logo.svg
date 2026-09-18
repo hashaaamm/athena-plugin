@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="Engineering Athena">
+  <title>Engineering Athena</title>
+  <!--
+    The listing icon: `athena-mark.svg` on the ground the landing page stands on. Every colour is a
+    design token — `#161826` is `--color-bg` and `#2b2741` is `--color-accent-900`, which is the
+    same `rgb(43, 39, 65)` the page's body wash uses. The corner radius is 21.9% of the side, the
+    ratio the 32px favicon in `apps/web/src/app/icon.svg` already uses.
+
+    The mark is scaled to 0.86 about the centre, leaving 12% of the side as margin. At the page's
+    own scale the outer ring sits 6% from the edge, which a rounded corner crowds and a platform's
+    own icon mask clips; the ratios between the rings, the orbits and the core are untouched.
+  -->
+  <defs>
+    <radialGradient id="ground" cx="82%" cy="-10%" r="95%">
+      <stop offset="0%" stop-color="#2b2741"/>
+      <stop offset="60%" stop-color="#161826"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="160" height="160" rx="35" fill="url(#ground)"/>
+
+  <g transform="translate(11.2 11.2) scale(0.86)">
+    <circle cx="80" cy="80" r="70" fill="none" stroke="rgba(233,233,237,0.06)" stroke-width="1"/>
+    <circle cx="80" cy="80" r="48" fill="none" stroke="rgba(233,233,237,0.08)" stroke-width="1"/>
+    <circle cx="80" cy="80" r="28" fill="none" stroke="rgba(233,233,237,0.1)" stroke-width="1"/>
+
+    <path d="M80 32 L128 80 M128 80 L46 114 M46 114 L80 32" fill="none" stroke="rgba(233,233,237,0.05)" stroke-width="1"/>
+    <circle cx="80" cy="32" r="1.8" fill="rgba(233,233,237,0.35)"/>
+    <circle cx="128" cy="80" r="2.2" fill="rgba(145,132,217,0.8)"/>
+    <circle cx="46" cy="114" r="1.6" fill="rgba(233,233,237,0.35)"/>
+
+    <circle cx="32" cy="80" r="1.8" fill="rgba(233,233,237,0.32)"/>
+    <circle cx="80" cy="128" r="2" fill="rgba(145,132,217,0.6)"/>
+    <circle cx="122" cy="52" r="1.5" fill="rgba(233,233,237,0.32)"/>
+
+    <circle cx="80" cy="80" r="24" fill="rgba(145,132,217,0.12)"/>
+    <path d="M80 67 L91.3 73.5 L91.3 86.5 L80 93 L68.7 86.5 L68.7 73.5 Z" fill="none" stroke="rgba(145,132,217,0.85)" stroke-width="1.3"/>
+    <circle cx="80" cy="80" r="2.4" fill="rgba(233,233,237,0.9)"/>
+  </g>
+</svg>

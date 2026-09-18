@@ -1,0 +1,21 @@
+{
+  "name": "engineering-athena",
+  "owner": {
+    "name": "Engineering Athena"
+  },
+  "metadata": {
+    "description": "The Engineering Athena handbook, served to coding agents over MCP.",
+    "version": "0.4.0"
+  },
+  "plugins": [
+    {
+      "name": "engineering-athena",
+      "source": ".",
+      "displayName": "Engineering Athena",
+      "description": "Rules, guides, flows and knowledge for the code you are about to write. Bundles the MCP server and the skill that teaches an agent when to ask it.",
+      "version": "0.4.0",
+      "logo": "assets/logo.svg",
+      "keywords": ["engineering", "architecture", "backend", "cloud", "standards", "mcp"]
+    }
+  ]
+}

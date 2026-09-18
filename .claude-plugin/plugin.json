@@ -1,7 +1,7 @@
 {
   "name": "athena",
   "description": "Rules, guides, flows and knowledge for the code you are about to write, retrieved from the Engineering Athena handbook before you plan or write it.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "Engineering Athena"
   },
