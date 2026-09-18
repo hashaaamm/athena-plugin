@@ -45,17 +45,38 @@ echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 
 ### Cursor
 
-Cursor reads plugins too, and this repository is one. Install it through **Settings → Customize →
-Plugins**, or Cursor's marketplace once the listing is live, and Cursor will ask for your token as
-part of the install.
+Two halves, and for now they install by hand. The plugin packaging below is ready but the
+marketplace listing is not submitted yet, so this is the path that works today.
 
-That is the reason it is packaged as a *Cursor Plugin* rather than the portable Agent Plugin: the
-Cursor format can declare install-time **variables**, so the token is configured through Cursor and
-never written into a file in a repository. `mcp.json` refers to it as `${ATHENA_TOKEN}` and holds no
-value of its own.
+**The server** — `~/.cursor/mcp.json`:
 
-`ATHENA_MCP_URL` is the second variable, and only matters if you self-host; it defaults to the
-hosted service.
+```json
+{
+  "mcpServers": {
+    "athena": {
+      "url": "https://mcp.engineeringathena.com/mcp",
+      "headers": { "Authorization": "Bearer ath_..." }
+    }
+  }
+}
+```
+
+The file in your **home directory**, not a `.cursor/mcp.json` inside a repository: the token goes
+in literally, and a token in a tracked file is a committed credential.
+
+**The skill** — one command, per repository:
+
+```bash
+mkdir -p .cursor/skills/athena && curl -fsSL \
+  https://raw.githubusercontent.com/hashaaamm/athena-plugin/main/skills/athena/SKILL.md \
+  -o .cursor/skills/athena/SKILL.md
+```
+
+Byte for byte the file the Claude Code plugin loads. Re-run it to update.
+
+**Once the listing is live**, this becomes an install from Settings → Customize → Plugins, and
+Cursor will ask for the token itself rather than you pasting it into a file — the packaging in
+`.cursor-plugin/plugin.json` already declares it as a variable.
 
 ### Either way
 
@@ -71,8 +92,8 @@ it — one file, so neither client can be given advice the other was not.
 /plugin marketplace update
 ```
 
-In Cursor, update the plugin from the same Plugins screen you installed it on. Knowledge updates
-need neither: the handbook lives on the server, so standards and content change without anybody
+In Cursor, re-run the `curl` — or update the plugin from the Plugins screen once it is listed.
+Knowledge updates need neither: the handbook lives on the server, so standards and content change without anybody
 reinstalling anything. A plugin release is only needed when a *workflow* or the MCP contract
 changes.
 
