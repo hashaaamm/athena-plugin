@@ -7,8 +7,10 @@ This repository is how Athena is installed, in **Claude Code** and in **Cursor**
 things:
 
 - a **plugin** for Claude Code, carrying the MCP server and the skill together;
-- a **rule file** for Cursor, carrying the same guidance, generated from that same skill;
 - a **cookiecutter template** for a FastAPI service built to the handbook's standards.
+
+Cursor installs the same two halves by hand and reads the same skill file, so there is only one
+copy of the guidance in here.
 
 The handbook itself is not here. It is served through the MCP server, against the question you
 actually asked.
@@ -39,7 +41,8 @@ echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 
 ### Cursor
 
-Cursor has no plugin mechanism, so the two halves install separately.
+Cursor has no plugin mechanism, so the two halves install separately — but it reads the **same
+skill file**, so there is nothing to convert.
 
 **The server** — add this to `~/.cursor/mcp.json`:
 
@@ -57,26 +60,23 @@ Cursor has no plugin mechanism, so the two halves install separately.
 The file in your **home directory**, not a `.cursor/mcp.json` inside a repository: the token goes
 in literally, and a token in a tracked file is a committed credential.
 
-**The guidance** — a rule file, from this repository:
+**The skill** — one command:
 
 ```bash
-mkdir -p .cursor/rules && curl -fsSL \
-  https://raw.githubusercontent.com/hashaaamm/athena-plugin/main/clients/cursor/athena.mdc \
-  -o .cursor/rules/athena.mdc
+mkdir -p .cursor/skills/athena && curl -fsSL \
+  https://raw.githubusercontent.com/hashaaamm/athena-plugin/main/plugins/athena/skills/athena/SKILL.md \
+  -o .cursor/skills/athena/SKILL.md
 ```
 
-That is per-repository. For every repository instead, paste the same file's contents into
-**Settings → Rules → User Rules** and skip the `curl`. It is `alwaysApply: true` with no `globs`,
-because whether to consult the handbook is decided before anyone knows which files a change will
-touch — it is as true of a migration as of a Dockerfile.
+Byte for byte the file the Claude Code plugin ships. Not a port of it, not generated from it — the
+same file, so the two clients cannot be given different advice.
 
 ### Either way
 
 Restart the client. `/mcp` in Claude Code, or Settings → MCP in Cursor, should list `athena`, and
 the agent should reach for it the next time you ask for a feature.
 
-The rule file and the skill are the same guidance — the Cursor rule is generated from the skill by
-`clients/cursor/generate.py`, so the two clients cannot end up giving different answers to the same
+Both clients read the same `SKILL.md`, so neither can end up giving a different answer to the same
 question.
 
 ## Getting a token
@@ -131,9 +131,7 @@ Defaults to `https://mcp.engineeringathena.com/mcp`.
 ```
 .claude-plugin/marketplace.json           the marketplace
 plugins/athena/.claude-plugin/plugin.json the plugin, and the MCP server definition
-plugins/athena/skills/athena/SKILL.md     the skill — the source of the guidance
-clients/cursor/athena.mdc                 the Cursor rule, generated from that skill
-clients/cursor/generate.py                the generator
+plugins/athena/skills/athena/SKILL.md     the skill — both clients read this one file
 templates/cookiecutter-service/           the FastAPI service template
 ```
 
@@ -145,6 +143,6 @@ be retrieved against the question you actually asked — publishing them as file
 product and a bigger one.
 
 The skill and the template are authored in the handbook's own repository and copied here in one
-direction. The Cursor rule is generated from the skill rather than written, for the same reason:
-two files that are supposed to say the same thing will not, and the disagreement is invisible until
-somebody gets different advice from the same product depending on which editor they opened.
+direction. There is exactly one copy of each: two files that are supposed to say the same thing
+will not, and the disagreement is invisible until somebody gets different advice from the same
+product depending on which editor they opened.
