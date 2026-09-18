@@ -40,28 +40,32 @@ shell: _env
     {{compose}} run --rm dev-runner bash
 
 # Create .env on first run. `just dev` from a clean clone must not need a manual step.
+# Every recipe that reaches docker compose depends on this, because compose reads the root `.env`
+# and a freshly generated project does not have one. Without it `just check` — the first command
+# anybody runs on a new project — fails on a missing env file rather than on anything about their
+# code, which is the worst possible first impression of a template.
 _env:
     @test -f .env || (cp .env.example .env && echo "created .env from .env.example")
 
 # --- Quality -------------------------------------------------------------
 
 # Everything CI runs, in CI's order. If this passes, the pipeline passes.
-check: lint test
+check: _env lint test
 
 # Lint, format check, type check and layer contracts, for every component
-lint:
+lint: _env
     {{backend}} lint
 {% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} lint
 {% endraw %}{% endif %}{% raw %}
 
 # Apply formatting and safe autofixes, for every component
-fmt:
+fmt: _env
     {{backend}} fmt
 {% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} fmt
 {% endraw %}{% endif %}{% raw %}
 
 # Run the full test suite in parallel
-test *ARGS:
+test *ARGS: _env
     {{backend}} test {{ARGS}}
 
 # Run one test file or node, verbose and fail-fast
@@ -69,7 +73,7 @@ test-one TARGET:
     {{backend}} test-one {{TARGET}}
 
 # Dependency vulnerability scan
-audit:
+audit: _env
     {{backend}} audit
 
 # --- Database ------------------------------------------------------------
