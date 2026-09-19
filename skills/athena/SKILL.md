@@ -65,10 +65,42 @@ Use it when:
 - you are about to fan work out, and each sub-agent should pull its own content into its own context
 
 For genuinely multi-step work, a context response may offer a **flow**. Call `athena_flow` with that
-reference: it returns the units, which of them collide over the same files, and a fan-out directive.
-Then spawn one sub-agent per unit and have each call `athena_brief` for its own unit. Do not read
-every unit's brief yourself — that puts the whole flow in one context, which is what the split exists
-to prevent.
+reference.
+
+## Running a flow: you orchestrate, you do not execute
+
+A flow response carries `fan_out`, and `fan_out.required` is **always true**. It is an instruction,
+not a summary to skim. A flow you execute yourself, unit after unit in your own context, is the one
+way of running it that is wrong — and it is the easy mistake, because executing feels like progress
+and delegating feels like overhead.
+
+It is wrong for a specific reason. By the last unit, your context is mostly the previous units'
+rules, file lists and output, and the agent writing that unit is the one paying least attention to
+it. The plan/brief split exists to stop exactly that, and `athena_brief` returns a ready-made
+`spawn_prompt` precisely so you never have to read the work you are handing off.
+
+So, mechanically:
+
+1. **Walk `fan_out.groups` in order.** Each has a 1-based `group`. Never start one early — a later
+   group depends on something an earlier one produces.
+2. **Inside a group, look at `run_concurrently`.** When it is true, spawn *every* step in that group
+   at once, in a single message with one sub-agent call per step. Spawning them one after another
+   and waiting for each is a serial run wearing a parallel directive.
+3. **One sub-agent per step in `steps`.** Give it `brief_call` and have it call `athena_brief`
+   itself, in its own context, and use the returned `spawn_prompt` as its system prompt. Pass that
+   through without reading it.
+4. **Pass `must_not_edit` to each sub-agent** as files it may not touch. That list is how two agents
+   in one group stay out of each other's way.
+5. **Wait for the whole group, then check `after_each_group`** before starting the next one.
+6. **On a failure, do what `on_failure` says** — which includes reporting it with `athena_feedback`.
+
+Your own context stays thin on purpose: the directive, each sub-agent's summary, and nothing else.
+Do not fetch briefs for units you are not about to run, and do not read a unit's brief in order to
+"check" a sub-agent — you are reassembling in your context the thing you just split.
+
+`mode` tells you which shape the flow is overall: `parallel` when some groups fan out, `sequential`
+when every group is one step. `sequential` still means one sub-agent per step. It does not mean do
+it yourself.
 
 ## The request is the scope
 
@@ -141,7 +173,8 @@ it yourself, and then report what was missing — see "Tell Athena what it did n
 template, generate it — run the command. Writing the same files by hand is not equivalent, and the
 difference is not effort: the template is what is consistent with the rules the guide cites, and a
 hand-built approximation passes review for correctness and fails it for convention. The same holds
-for a flow: work its units rather than inventing an order of your own.
+for a flow: work its units rather than inventing an order of your own, and delegate them rather
+than working through them yourself — see "Running a flow".
 
 This is the failure mode to watch for in yourself. You will be holding a guide in context and it
 will feel faster to write the files directly than to shell out. It is faster, and it produces
@@ -222,30 +255,36 @@ send it.
 
 ## Installing
 
-The plugin carries this skill and the MCP server together, because they are two halves of one
-thing — the server can answer a question, and the skill is what makes the agent ask. The token
-is never written into this repository. A credential in a tracked `.mcp.json` is a committed
-credential. What the hosted server does with a tool call is in `PRIVACY.md`.
-
-### Cursor
-
-Install **engineering-athena** from Customize → Plugins (Marketplace, or add
-`https://github.com/hashaaamm/athena-plugin` from GitHub). Cursor prompts for `ATHENA_TOKEN`.
-Leave the MCP URL on the default unless you self-host.
-
-### Claude Code
+Two commands, and one credential. The plugin carries this skill and the MCP server together,
+because they are two halves of one thing — the server can answer a question, and the skill is what
+makes the agent ask.
 
 ```bash
+# in Claude Code
 /plugin marketplace add hashaaamm/athena-plugin
 /plugin install athena@engineering-athena
+```
+
+Then put the token you were given where your shell will find it:
+
+```bash
 echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 ```
 
+The token is read from the environment, so it is never written into a file in your repository. A
+credential in a tracked `.mcp.json` is a committed credential.
+
 ### Without the plugin
 
-If you are self-hosting, or you want the server without the skill, add the MCP at user scope —
-the token is tied to you rather than to the repository — and copy this file to
-`~/.cursor/skills/athena/SKILL.md` or `~/.claude/skills/athena/SKILL.md`.
+If you are self-hosting, or you want the server without the skill:
+
+```bash
+claude mcp add --scope user --transport http athena https://<your-athena-host>/mcp \
+  --header "Authorization: Bearer $ATHENA_TOKEN"
+```
+
+User scope, not project scope: the token is tied to you rather than to the repository. Copy this
+file to `~/.claude/skills/athena/SKILL.md` to get the skill as well.
 
 ### Getting a token
 
