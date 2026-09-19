@@ -41,7 +41,23 @@ def main() -> None:
     if not INCLUDE_FRONTEND:
         # The backend does not reference frontend/ anywhere, so removing it is a clean cut.
         # Adding it back later means creating the directory, not restructuring the repo.
-        _remove("frontend")
+        # Its workflow and its CORS test go with it: a pipeline filtered on a path that does not
+        # exist never runs and never says so, and CORS is only a question once a browser asks it.
+        _remove(
+            "frontend",
+            ".github/workflows/frontend-ci.yml",
+            "backend/tests/test_cors.py",
+        )
+    elif not USE_POSTGRES:
+        # The frontend's example resource is the backend's example resource. With no database
+        # there is no /api/v1/items to call, so the pages that call it go too — the dashboard
+        # and the generated API client are written to work either way.
+        _remove(
+            "frontend/src/lib/api/items.ts",
+            "frontend/src/lib/api/items.test.ts",
+            "frontend/src/routes/items.tsx",
+            "frontend/src/routes/items.test.tsx",
+        )
 
     if not USE_SENTRY:
         _remove("backend/app/core/observability.py")
@@ -77,14 +93,22 @@ def main() -> None:
         if target.exists():
             target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+    #: Neither lockfile is templated — a committed one would pin whatever existed when the
+    #: template was last touched — and every image build installs with a --frozen flag, so the
+    #: first command in a new project is always resolving them.
+    frontend_lock = (
+        "    (cd frontend && just lock)     # same, for pnpm-lock.yaml\n" if INCLUDE_FRONTEND else ""
+    )
+
     sys.stdout.write(
         "\n"
         f"  Created {SLUG}/\n"
         "\n"
-        "  Next three commands:\n"
+        "  First commands:\n"
         "\n"
-        f"    cd {SLUG}/backend && uv lock   # the lockfile is not templated; resolve it once\n"
         f"    cd {SLUG} && cp .env.example .env\n"
+        "    (cd backend && uv lock)        # the lockfile is not templated; resolve it once\n"
+        f"{frontend_lock}"
         "    just dev\n"
         "\n"
         "  Then: just check\n"

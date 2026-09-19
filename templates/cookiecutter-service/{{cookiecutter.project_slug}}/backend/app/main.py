@@ -11,6 +11,9 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
+{%- if cookiecutter.include_frontend == "yes" %}
+from fastapi.middleware.cors import CORSMiddleware
+{%- endif %}
 
 from app.api.router import api_router
 from app.api.v1 import health
@@ -62,6 +65,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     register_exception_handlers(app)
+{%- if cookiecutter.include_frontend == "yes" %}
+
+    # The SPA is served from a different origin than the API — a different port locally, a
+    # different host deployed — so without this every request from the browser fails preflight
+    # and the network tab is the only place that says why. Configured, never wildcarded: an
+    # empty CORS_ORIGINS means no browser may call this API, which is the safe default for a
+    # deployment that has no web client.
+    if settings.cors_origin_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origin_list,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+{%- endif %}
     app.include_router(health.router)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 

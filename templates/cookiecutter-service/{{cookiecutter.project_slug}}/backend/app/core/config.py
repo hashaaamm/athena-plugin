@@ -42,7 +42,14 @@ class Settings(BaseSettings):
     json_logs: bool = True
     #: The immutable build SHA. CI sets it; Sentry needs it to attribute a regression to a commit.
     git_sha: str = "local"
-{% if cookiecutter.use_postgres == "yes" %}
+{% if cookiecutter.include_frontend == "yes" %}
+    # --- Browser client --------------------------------------------------
+    #: Comma-separated origins the SPA is served from, e.g. "http://localhost:3000".
+    #: Empty — the default — means no cross-origin access at all, which is correct for a service
+    #: with no browser client. There is deliberately no "allow everything" setting: a wildcard
+    #: origin cannot carry credentials anyway, so it buys nothing but a finding in a pen test.
+    cors_origins: str = ""
+{% endif %}{% if cookiecutter.use_postgres == "yes" %}
     # --- Database --------------------------------------------------------
     postgres_host: str = "db"
     postgres_port: int = 5432
@@ -62,7 +69,14 @@ class Settings(BaseSettings):
     @property
     def is_deployed(self) -> bool:
         return self.environment in ("staging", "production")
-{% if cookiecutter.use_postgres == "yes" %}
+{% if cookiecutter.include_frontend == "yes" %}
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Parsed once, here, so `.env` can hold a plain comma-separated string and no caller
+        has to remember to strip whitespace."""
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+{% endif %}{% if cookiecutter.use_postgres == "yes" %}
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:

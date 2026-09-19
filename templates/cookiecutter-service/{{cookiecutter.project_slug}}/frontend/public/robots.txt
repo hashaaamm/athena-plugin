@@ -1,0 +1,3 @@
+# An internal application. Change this the day it stops being one.
+User-agent: *
+Disallow: /

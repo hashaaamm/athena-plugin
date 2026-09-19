@@ -3,8 +3,8 @@
 # Ask Athena for the local development and command runner rules.
 #
 # This justfile owns the things that span components (the stack, CI's gate) and DELEGATES
-# everything language-specific to backend/justfile. When frontend/ arrives it gets its own
-# justfile and `check` gains one line — nothing here is restructured.
+# everything language-specific to backend/justfile and frontend/justfile. Another component is
+# another delegation line — the command vocabulary here never grows.
 {% raw %}
 set shell := ["bash", "-uc"]
 
@@ -64,9 +64,13 @@ fmt: _env
 {% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} fmt
 {% endraw %}{% endif %}{% raw %}
 
-# Run the full test suite in parallel
+# Run the full test suite in parallel. ARGS reach the backend suite; the frontend's runs whole,
+# because pytest node ids and vitest file paths are not the same vocabulary. Target a single
+# frontend test with `cd frontend && just test-one <file>`.
 test *ARGS: _env
     {{backend}} test {{ARGS}}
+{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} test
+{% endraw %}{% endif %}{% raw %}
 
 # Run one test file or node, verbose and fail-fast
 test-one TARGET:
@@ -75,6 +79,15 @@ test-one TARGET:
 # Dependency vulnerability scan
 audit: _env
     {{backend}} audit
+{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}
+# --- API client ----------------------------------------------------------
+
+# Regenerate the frontend's typed API client from the backend's OpenAPI document.
+# Run it in the SAME change as the backend edit that motivated it — a client regenerated later
+# is a client that was wrong in between. The stack must be up (`just dev` in another terminal).
+gen-api: _env
+    {{frontend}} gen-api
+{% endraw %}{% endif %}{% raw %}
 
 # --- Database ------------------------------------------------------------
 {% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
@@ -108,9 +121,11 @@ db-seed: _env
 {% endraw %}{% endif %}{% raw %}
 # --- Build ---------------------------------------------------------------
 
-# Build the production image
+# Build the production images
 build:
     {{backend}} build
+{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} build
+{% endraw %}{% endif %}{% raw %}
 
 # --- Infrastructure ------------------------------------------------------
 #

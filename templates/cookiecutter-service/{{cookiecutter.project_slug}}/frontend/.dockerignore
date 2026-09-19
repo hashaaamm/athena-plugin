@@ -1,0 +1,12 @@
+# Build context size is build time. Ask Athena for the containerization rules.
+.git
+.gitignore
+node_modules
+dist
+.vite
+coverage
+*.md
+!README.md
+.env
+.env.*
+!.env.example

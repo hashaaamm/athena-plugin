@@ -1,9 +1,11 @@
 # cookiecutter-service
 
-A production-ready **FastAPI service in a monorepo-shaped repository**. It generates a repo whose
-backend already satisfies the handbook's **MUST**s — layering, typed settings, async SQLAlchemy,
-Alembic, multi-stage image, Cloud Run health endpoints, CI and an inert-until-configured CD
-pipeline — and whose *shape* leaves room for a frontend beside it.
+A production-ready **FastAPI service in a monorepo-shaped repository**, with an optional
+**React + TypeScript SPA** beside it. It generates a repo whose backend already satisfies the
+handbook's **MUST**s — layering, typed settings, async SQLAlchemy, Alembic, multi-stage image,
+Cloud Run health endpoints, CI and an inert-until-configured CD pipeline — and whose frontend,
+when you ask for one, arrives with a typed API client generated from that backend's own OpenAPI
+document.
 
 The reference implementation it was built from is `apps/handbook-mcp`, including the bugs that were
 expensive to find there and are pre-fixed here.
@@ -45,7 +47,7 @@ lockfile fails the build loudly rather than silently resolving something new.
 | `github_repository` | `your-org/<slug>` | `owner/repo`. Becomes the Workload Identity provider's attribute condition, which is the one line stopping any repository on GitHub from assuming the CI identity. Wrong here means a deploy that cannot authenticate; a wildcard here means anyone can. |
 | `use_postgres` | `yes` | `no` drops Alembic, the ORM, the example resource and the database from Compose, leaving the layer packages and the health endpoints. |
 | `use_sentry` | `yes` | `no` drops the SDK and `app/core/observability.py`. `yes` wires it with an **empty DSN by default** — local development reports nothing, by rule. |
-| `include_frontend` | `no` | `yes` scaffolds a `frontend/` placeholder with its own justfile, `AGENTS.md` and README. `no` removes the directory entirely. |
+| `include_frontend` | `no` | `yes` scaffolds the React SPA: Vite, TanStack Router and Query, Tailwind v4 with shadcn/ui, a generated API client, Vitest, its own justfile, Compose service, CI workflow and production image — and turns on CORS in the backend. `no` removes the directory, its workflow and the CORS test entirely. |
 
 ## What is at the root, and what is in `backend/`
 
@@ -73,20 +75,23 @@ developer runs from the repository root, is root. Anything specific to the Pytho
 | `.dockerignore` | Applies to the backend's build context. |
 | `AGENTS.md` | The rules an agent needs while editing the service. |
 
-### Adding a frontend later
+### Adding the frontend later
 
-1. `mkdir frontend` (or generate with `include_frontend=yes` up front) and scaffold inside it.
-2. Add a `frontend` service to the root `docker-compose.yml` — the commented block shows where.
-3. Add `frontend := "just --justfile frontend/justfile --working-directory frontend"` to the root
-   justfile and one line to `lint`, `fmt` and `test`.
-4. Add `.github/workflows/frontend-ci.yml` with `paths: ['frontend/**']`, rather than more jobs in
-   `ci.yml` — separate workflows mean neither component queues behind the other's runner.
-5. Deploying it is one more `Service(...)` in `infra/pulumi/__main__.py`, with its own runtime
-   service account. The template ships no Cloud Run service for `frontend/` because there is no
-   image to run in it; a service permanently on the bootstrap placeholder is a resource that
-   survives for years because nothing ever fails.
+Generating with `include_frontend=no` and changing your mind is not a reshuffle. Re-run the
+template into a scratch directory with `include_frontend=yes` and copy across four things:
 
-Nothing in `backend/` moves.
+1. `frontend/` itself.
+2. The `frontend` service and the `frontend-node-modules` volume in `docker-compose.yml`.
+3. The `frontend :=` line in the root `justfile`, plus the delegation lines in `lint`, `fmt`,
+   `test`, `build` and the `gen-api` recipe.
+4. `.github/workflows/frontend-ci.yml`, the `VITE_*` and `CORS_ORIGINS` block in `.env.example`,
+   and the CORS middleware in `backend/app/main.py` with its setting and its test.
+
+Nothing in `backend/` moves, and nothing in `infra/` has to change until you want the SPA
+deployed — which is one more `Service(...)` in `infra/pulumi/__main__.py` with its own runtime
+service account. The template ships no Cloud Run service for the frontend because there is no
+image in the registry to run in it, and a service permanently on the bootstrap placeholder is a
+resource that survives for years because nothing ever fails.
 
 ## The cookiecutter trap this template handles explicitly
 
@@ -117,6 +122,12 @@ are rendered, so their bodies are wrapped in `{% raw %}` blocks with the cookiec
 sitting outside them. If you edit a justfile in this template, check you are still inside the right
 block.
 
+**And a third time, in JSX.** An inline object prop — `activeProps={{ className: "..." }}` — opens
+with the same two braces. Every one of those in `frontend/` is hoisted to a `const` above the
+component, which is why the JSX in this template has no inline object props anywhere. It is also
+better React, but that is not why it is done. Before committing an edit under `frontend/`, grep
+the file for a doubled brace that is not a cookiecutter variable you meant to write.
+
 ## What the generated backend gives you
 
 - **Layers, enforced.** `api → facades → services → repositories → models`, with `import-linter`
@@ -136,6 +147,40 @@ block.
   `prepared_statement_cache_size=0` for Cloud SQL, structured JSON logs, graceful shutdown.
 - **A real suite**: per-worker schema isolation, per-test transaction rollback, and tests that run
   through the whole stack to a real Postgres.
+
+## What the generated `frontend/` gives you
+
+Only with `include_frontend=yes`. A React 19 SPA in TypeScript, built with Vite 6 — the same
+stack, and largely the same files, as the reference application it was lifted from.
+
+- **A generated API client.** `openapi-typescript` turns the backend's OpenAPI document into
+  types and `openapi-fetch` makes the calls, so a renamed field is a failed build rather than
+  `undefined` in a table cell. `just gen-api` regenerates it; the committed `schema.d.ts` is a
+  hand-written seed so a fresh clone type-checks before the backend has ever been started.
+- **One HTTP entry point**, in `src/lib/api/client.ts`, which also reads the backend's error
+  envelope: `{ error: { code, message } }` becomes a thrown `ApiError` with the code intact.
+- **Fetchers, then hooks over them.** Each resource module exports plain async functions and
+  thin TanStack Query wrappers. Testing a fetcher needs no React and no provider, which is why
+  the fetchers are the part with tests.
+- **TanStack Router with the tree in one readable file**, a 404 screen, a router-level error
+  screen, and an error boundary *inside* the shell so a page that throws costs the user the
+  page rather than their navigation.
+- **Tailwind v4 and shadcn/ui**, with the palette in `src/index.css` — there is no
+  `tailwind.config.js` in v4, and no hex code belongs in a component.
+- **A worked resource** (list, create with react-hook-form + zod, delete) that renders every
+  state a request has: loading, empty, error, data. It exists to be read and then deleted, and
+  it is removed automatically when `use_postgres=no` leaves no endpoint to call.
+- **Vitest + Testing Library**, asserting through roles and text, mocking at the `api` client
+  rather than at `fetch`.
+- **A production image** that builds with pnpm and serves with `nginx-unprivileged` on `$PORT`,
+  with the SPA fallback and cache headers written down — plus its own paths-filtered CI
+  workflow, so a backend change never queues behind a frontend runner.
+- **CORS in the backend**, configured rather than wildcarded, with tests. Without it the API
+  answers every request correctly and the browser still refuses to hand the body to the page.
+
+Two constraints are worth knowing before you edit any of it. `VITE_*` variables are **inlined at
+build time**, so they are Docker build args, not runtime environment variables, and none of them
+can be a secret. And the lockfile is not templated, for the same reason `uv.lock` is not.
 
 ## What the generated `infra/` gives you
 

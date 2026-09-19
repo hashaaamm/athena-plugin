@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+/* Tailwind v4 has no config file: the theme IS this stylesheet. Two layers of tokens live here,
+   and the split is deliberate.
+
+   1. @theme below — the product palette. Namespaced away from shadcn's token names (accent,
+      muted, border, …) so a shadcn component you add tomorrow cannot silently repaint the app.
+      Each one becomes a utility: --color-ink gives you text-ink, bg-ink, border-ink.
+   2. :root / .dark further down — shadcn/ui's own tokens, in oklch. Components read these.
+
+   Change a colour HERE, never in a component. Ask Athena for the frontend styling rules. */
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+
+  --color-brand: #5b5bd6;
+  --color-brand-hover: #4f4fce;
+  --color-brand-soft: #eef0fe;   /* active nav background */
+  --color-brand-tint: #eaeafb;   /* avatar tile */
+
+  --color-page: #f6f6f8;         /* app background, behind the surfaces */
+  --color-surface: #ffffff;      /* cards, sidebar */
+  --color-subtle: #fbfbfc;       /* input fill, code blocks */
+  --color-rail: #f7f7fb;
+
+  --color-hairline: #ececef;     /* card and sidebar borders */
+  --color-field: #e4e4e9;        /* input border */
+  --color-nav-hover: #f0f0f4;
+
+  --color-ink: #1a1a1e;          /* primary text */
+  --color-body: #4a4a52;         /* labels, body copy */
+  --color-subtext: #77777f;      /* secondary text */
+  --color-mute: #9a9aa5;         /* muted text and icons */
+  --color-faint: #a8a8b0;        /* captions, eyebrows */
+  --color-nav: #6b6b76;          /* inactive nav text */
+
+  --color-success: #16a34a;
+  --color-success-soft: #e7f6ed;
+  --color-warning: #b45309;
+  --color-warning-soft: #fdf0dd;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fbe9e9;
+
+  --shadow-card: 0 12px 40px -12px rgba(20, 20, 40, 0.12);
+}
+
+/* Dark mode is driven by a `.dark` class on an ancestor, not by prefers-color-scheme, so a user
+   preference can override the OS one. Nothing sets it yet — that is a feature, not an omission. */
+@custom-variant dark (&:is(.dark *));
+
+/* shadcn/ui "new-york" style, "neutral" base colour. Values are oklch because that is what the
+   generator emits; keep them in oklch so `pnpm dlx shadcn add` never fights this file. */
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+}
+
+/* Map the shadcn tokens onto Tailwind utilities: bg-background, text-foreground, rounded-lg, … */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+}
+
+/* Entrance used by the status screens. Every animation in this file must have a
+   motion-reduce escape at the call site. */
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

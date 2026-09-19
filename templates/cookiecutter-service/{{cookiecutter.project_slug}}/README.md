@@ -8,9 +8,12 @@ authority on every convention below; this file only says where things are.
 ## Run it
 
 ```bash
-cd backend && uv lock && cd ..   # once: resolve the lockfile the images build from
-cp .env.example .env             # `just dev` does this for you if you forget
-just dev                         # http://localhost:8000/docs
+cp .env.example .env                    # `just dev` does this for you if you forget
+(cd backend && uv lock)                 # once: resolve the lockfile the images build from
+{%- if cookiecutter.include_frontend == "yes" %}
+(cd frontend && just lock)              # once: the same, for pnpm-lock.yaml
+{%- endif %}
+just dev                                # API on http://localhost:8000/docs{% if cookiecutter.include_frontend == "yes" %}, app on http://localhost:3000{% endif %}
 ```
 
 ```bash
@@ -23,7 +26,7 @@ just --list     # every recipe, with its doc comment
 
 ```
 .
-├── justfile                 # orchestrator: delegates to backend/ (and later frontend/)
+├── justfile                 # orchestrator: delegates to each component's justfile
 ├── docker-compose.yml       # the whole stack
 ├── docker-compose.ci.yml
 ├── .github/workflows/       # ci.yml, cd.yml, infra.yml — paths-filtered per component
@@ -40,7 +43,11 @@ just --list     # every recipe, with its doc comment
 │   ├── justfile             # backend-only recipes
 │   └── pyproject.toml
 {%- if cookiecutter.include_frontend == "yes" %}
-└── frontend/                # placeholder — see frontend/README.md
+└── frontend/                # the React SPA — see frontend/README.md
+    ├── src/{components,lib/api,routes}
+    ├── docker/              # the production image: build with pnpm, serve with nginx
+    ├── justfile             # frontend-only recipes
+    └── package.json
 {%- endif %}
 ```
 
@@ -61,6 +68,17 @@ dependency is the only thing that commits. `app/api/deps.py` is the only place t
 assembled, which makes it the only seam a test has to override. `just lint` enforces all of this
 mechanically via `import-linter`.
 
+{% if cookiecutter.include_frontend == "yes" %}## The frontend, in one paragraph
+
+A React 19 SPA in TypeScript, built with Vite: TanStack Router for routes, TanStack Query for
+every read and write, Tailwind v4 with shadcn/ui for the styling, react-hook-form and zod for
+forms, Vitest and Testing Library for the suite. The API client in `src/lib/api/` is **generated
+from the backend's own OpenAPI document** by `just gen-api` — so a renamed field is a failed
+build here rather than `undefined` in front of a user. Run it in the same change as the backend
+edit that motivated it. The production image builds the static bundle and serves it with nginx;
+`VITE_*` values are inlined at build time, which makes them build args and means none of them
+can be a secret. [frontend/README.md](frontend/README.md) has the rest.
+{% endif %}
 ## Deploying
 
 `infra/` declares the cloud resources in Pulumi; `.github/workflows/cd.yml` builds an immutable

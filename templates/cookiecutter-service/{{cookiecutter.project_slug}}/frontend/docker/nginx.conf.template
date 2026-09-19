@@ -1,0 +1,30 @@
+# Rendered by the base image's entrypoint (envsubst) on container start, so ${PORT} is Cloud Run's
+# and not a guess. Only variables that are actually set are substituted, which is why $uri below
+# survives intact.
+server {
+    listen ${PORT};
+    server_name _;
+    root /usr/share/nginx/html;
+
+    # Client-side routing: every unknown path is the SPA's problem, not a 404. Without this,
+    # a hard refresh on any route but "/" returns nginx's 404 page.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Vite emits content-hashed filenames, so these are immutable by construction.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # index.html is the one file that must never be cached: it is the map to the hashed assets,
+    # and a cached copy pins a browser to a deploy that no longer exists.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+}

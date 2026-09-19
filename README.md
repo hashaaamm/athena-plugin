@@ -117,8 +117,11 @@ pipx install cookiecutter   # or: uv tool install cookiecutter
 cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service
 ```
 
-It asks for a project name and derives the rest. `include_frontend` adds a React workspace;
-`use_postgres` and `use_sentry` drop the parts you are not using rather than leaving them stubbed.
+It asks for a project name and derives the rest. `include_frontend=yes` adds a React + TypeScript
+SPA beside the service — Vite, TanStack Router and Query, Tailwind v4 with shadcn/ui, and an API
+client generated from the backend's own OpenAPI document, with its own justfile, Compose service,
+CI workflow and production image. `use_postgres` and `use_sentry` drop the parts you are not using
+rather than leaving them stubbed.
 
 ## What you get
 

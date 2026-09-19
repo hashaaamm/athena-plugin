@@ -8,7 +8,7 @@ in full. This file is a **map** of the repository; each subtree carries its own 
 | `backend/` | [backend/AGENTS.md](backend/AGENTS.md) | FastAPI service, Postgres, Cloud Run |
 | `infra/` | [infra/README.md](infra/README.md) | Pulumi (Python): the cloud resources and the order they are created in |
 {%- if cookiecutter.include_frontend == "yes" %}
-| `frontend/` | [frontend/AGENTS.md](frontend/AGENTS.md) | Web client (placeholder — not yet built) |
+| `frontend/` | [frontend/AGENTS.md](frontend/AGENTS.md) | React + TypeScript SPA (Vite, TanStack, Tailwind) |
 {%- endif %}
 
 ## What this service is
@@ -26,6 +26,11 @@ does not know this will make architecturally wrong choices confidently.>>
   `docker/`, its own `justfile`.
 - **`infra/`** holds the Pulumi stack, its bootstrap script and its own Python toolchain. It
   describes where this repository runs. It is a sibling of `backend/`, not a part of it.
+{%- if cookiecutter.include_frontend == "yes" %}
+- **`frontend/`** holds the web client and only the web client: its `package.json`, its Vite and
+  ESLint configuration, its own `justfile` and its production image. It talks to the backend
+  through a client **generated** from the backend's OpenAPI document — never a hand-written type.
+{%- endif %}
 
 Adding a component means adding a directory and one line to the root `justfile`. It never means
 moving what is already here.
@@ -42,6 +47,9 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 | One test | `just test-one tests/test_item_api.py::test_create_and_read_back` |
 | Lint, types, layer contracts | `just lint` |
 | Everything CI runs | `just check` |
+{%- if cookiecutter.include_frontend == "yes" %}
+| Regenerate the frontend's API client | `just gen-api` (after every backend API change) |
+{%- endif %}
 | Unit-test the Pulumi stack | `just infra-test` |
 | See what an apply would change | `just infra-preview` |
 {%- if cookiecutter.use_postgres == "yes" %}
@@ -54,6 +62,9 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 
 - [ ] `just check` passes
 - [ ] A new endpoint has router + facade + service + repository + schemas + tests
+{%- if cookiecutter.include_frontend == "yes" %}
+- [ ] An API change was followed by `just gen-api`, in the same commit
+{%- endif %}
 {%- if cookiecutter.use_postgres == "yes" %}
 - [ ] The migration has a working `downgrade()` and the history has one head
 {%- endif %}

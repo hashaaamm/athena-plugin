@@ -1,33 +1,92 @@
-# Frontend recipes. Placeholders until there is an app here — they exist so the root justfile can
-# delegate today and nothing has to change when the real app lands.
+# Frontend recipes. Everything specific to the web client lives here; the root justfile
+# delegates to it, and the recipe names are the same ones every component in every repository
+# uses. Ask Athena for the local development and command runner rules.
+#
+# Run these from the repository root (`just test`) or from here (`cd frontend && just test`).
 {% raw %}
 set shell := ["bash", "-uc"]
+
+# Recipes run inside the compose `frontend` service, for the same reason the backend's run in
+# its container: the toolchain that runs here is the toolchain CI runs, and neither needs Node
+# installed on your machine. `--no-deps` keeps `just lint` from booting Postgres to run ESLint.
+#
+# If you would rather use your own Node, `pnpm lint` and friends work exactly the same from this
+# directory. The scripts in package.json are the single definition; these recipes only choose
+# where they run.
+compose := "docker compose -f ../docker-compose.yml"
+run     := "docker compose -f ../docker-compose.yml run --rm --no-deps frontend sh -c"
+
+# Dependencies are a named volume, not a bind mount, so a fresh clone has none. Every recipe
+# installs first; with the volume warm that is a no-op that costs about a second.
+deps := "pnpm install --frozen-lockfile"
 
 # Show available recipes
 default:
     @just --list
 
-# Start the dev server
-dev:
-    @echo "frontend/: nothing to run yet — see frontend/README.md"
+# Compose refuses to parse a file whose `env_file:` is missing, even for a service you are not
+# running — so every recipe below that reaches Docker depends on this. It is what makes
+# `cd frontend && just lock` work on a clone that has not been set up yet, which matters because
+# that command is in the first-run sequence.
+_env:
+    @test -f ../.env || (cp ../.env.example ../.env && echo "created .env from .env.example")
+
+# --- Quality -------------------------------------------------------------
+
+# Everything CI runs, in CI's order. If this passes, the pipeline passes.
+check: lint test
 
 # Lint and type check
-lint:
-    @echo "frontend/: nothing to lint yet"
+lint: _env
+    {{run}} "{{deps}} && pnpm lint && pnpm typecheck"
 
-# Apply formatting
-fmt:
-    @echo "frontend/: nothing to format yet"
+# Apply safe autofixes. There is no separate formatter in this stack — ESLint owns it.
+fmt: _env
+    {{run}} "{{deps}} && pnpm exec eslint . --fix"
 
 # Run the test suite
-test *ARGS:
-    @echo "frontend/: no tests yet {{ARGS}}"
+test *ARGS: _env
+    {{run}} "{{deps}} && pnpm exec vitest run {{ARGS}}"
 
-# Build the production bundle
+# Run one test file, watching
+test-one TARGET: _env
+    {{compose}} run --rm --no-deps --service-ports frontend sh -c "{{deps}} && pnpm exec vitest {{TARGET}}"
+
+# --- Dependencies --------------------------------------------------------
+
+# Resolve pnpm-lock.yaml: run once after generating, and after any dependency edit.
+# The lockfile is not templated — a committed one would pin whatever existed when the template
+# was last touched. Every image build uses --frozen-lockfile, so a stale one fails loudly.
+lock: _env
+    {{run}} "pnpm install --lockfile-only"
+
+# --- API client ----------------------------------------------------------
+
+# Regenerate src/lib/api/schema.d.ts from the backend's OpenAPI document.
+# Run it on EVERY backend API change. The backend must be up: `just dev` in another terminal.
+gen-api: _env
+    {{run}} "{{deps}} && VITE_API_SCHEMA_URL=http://backend:8000/openapi.json pnpm gen:api"
+
+# --- Build ---------------------------------------------------------------
+
+# Build the production image. VITE_* values are inlined at build time, so they are build args.
 build:
-    @echo "frontend/: nothing to build yet"
+    DOCKER_BUILDKIT=1 docker build \
+        --platform=linux/amd64 \
+        -f docker/Dockerfile.prod \
+        --target production \
+        --build-arg VITE_API_URL="${VITE_API_URL:-http://localhost:8000}" \
+        -t $(just _image) \
+        .
 
-# Regenerate the API client from the backend's OpenAPI document
-gen-api:
-    @echo "frontend/: wire this to openapi-typescript against http://localhost:8000/openapi.json"
+_image:
+    @echo "{{env_var_or_default('IMAGE_REPO', 'local')}}/$(basename $(dirname $PWD))-frontend:$(git rev-parse --short HEAD)"
+
+# Open a shell in the frontend container
+shell: _env
+    {{compose}} run --rm --no-deps frontend bash
+
+# Tail frontend logs
+logs: _env
+    {{compose}} logs -f frontend
 {% endraw %}

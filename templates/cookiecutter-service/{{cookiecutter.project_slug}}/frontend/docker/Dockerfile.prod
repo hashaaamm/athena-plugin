@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+# React + Vite SPA: build to static files, serve them with nginx. Two stages, because the
+# runtime needs the 200kB of output, not the 400MB of toolchain that produced it.
+# Ask Athena for the containerization rules.
+
+FROM node:24-slim AS build
+WORKDIR /app
+RUN corepack enable
+
+# Lockfile before source: dependency layers survive a source-only change.
+COPY package.json pnpm-lock.yaml ./
+# --frozen-lockfile makes a stale lockfile a build failure rather than a silent re-resolve.
+# If this fails, run `just fe-lock` and commit the result.
+RUN --mount=type=cache,target=/pnpm-store \
+    pnpm config set store-dir /pnpm-store && pnpm install --frozen-lockfile
+
+# Vite inlines VITE_* at build time, so anything the bundle needs is a build arg — never a
+# runtime environment variable. A value passed to `docker run` arrives after the bundle exists.
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+COPY . .
+RUN pnpm build
+
+# nginx-unprivileged: runs as UID 101 and listens on 8080 without capabilities, which is what
+# Cloud Run wants. The stock nginx image needs root to bind 80 and a rewrite to do anything else.
+FROM nginxinc/nginx-unprivileged:1.30-alpine AS production
+# The image's entrypoint runs envsubst over /etc/nginx/templates/*.template on start, which is how
+# $PORT — set by Cloud Run, and not known at build time — reaches the listen directive.
+COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+ENV PORT=8080
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+    CMD wget -qO- "http://127.0.0.1:${PORT}/" >/dev/null || exit 1
