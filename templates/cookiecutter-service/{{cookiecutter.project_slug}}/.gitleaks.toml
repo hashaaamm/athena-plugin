@@ -1,0 +1,22 @@
+# Secret-scanning configuration, read by the `secrets` job in CI and by the pre-commit hook.
+#
+# It exists for exactly one false positive. `pulumi stack init --secrets-provider=gcpkms://…`
+# writes `secretsprovider` and `encryptedkey` into `infra/pulumi/Pulumi.<stack>.yaml`, and
+# `encryptedkey` is a long base64 blob that the generic-api-key rule cannot tell from a credential.
+# It is the stack's data key, encrypted by a KMS key only the project can use — ciphertext, not a
+# secret. The first push of a generated repository fails on it, every time, until this file exists.
+title = "{{ cookiecutter.project_slug }}"
+
+# Load gitleaks' own rules and add to them. Without this the file REPLACES the default rule set
+# with nothing, every scan reports "no leaks found", and the gate passes because it stopped
+# looking. A config that turns the scanner off is worse than the false positive it removed.
+[extend]
+useDefault = true
+
+# Allowlisted by LINE, not by path. Allowlisting the stack file would hide anything else in it,
+# and a stack file is a plausible place for somebody to paste a real value by hand; a plaintext
+# credential on any other line of `Pulumi.dev.yaml` is still a finding.
+[[allowlists]]
+description = "Pulumi's own stack-file keys: KMS ciphertext and a key URL, not credentials."
+regexTarget = "line"
+regexes = ['''^\s*(encryptedkey|secretsprovider):\s''']

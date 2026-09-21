@@ -61,6 +61,12 @@ COPY --from=builder --chown=appuser:appuser /app/alembic /app/alembic
 COPY --from=builder --chown=appuser:appuser /app/alembic.ini /app/alembic.ini
 {%- endif %}
 
+# The start command, at the same path it has in the repository so there is nothing to map between
+# what you read and what runs. Root-owned and 0755: appuser must be able to execute it and must
+# not be able to rewrite its own start command. `--chmod` fixes the mode in the image regardless of
+# what the checkout's bits happen to be, so a lost executable bit cannot become a crash loop.
+COPY --chmod=0755 docker/start.sh /app/docker/start.sh
+
 # The immutable build SHA, so /health/ready can say which revision is answering and Sentry can
 # attribute a regression to a commit.
 ARG GIT_SHA=""
@@ -70,7 +76,7 @@ USER appuser
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:8080/health/live || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT}/health/live" || exit 1
 
 # Worker count comes from WEB_CONCURRENCY, which gunicorn reads natively, so the platform sizes it
 # rather than the image. Two is the default because these containers usually run on a single shared
@@ -78,13 +84,11 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 ENV WEB_CONCURRENCY=2 \
     PORT=8080
 
-# Shell form with `exec` so $PORT expands — Cloud Run assigns the port and the container MUST
-# listen on it — while gunicorn still becomes PID 1 and receives SIGTERM directly.
-# `--graceful-timeout` gives in-flight requests time to finish during a revision swap.
-CMD ["sh", "-c", "exec gunicorn app.main:app \
-    --worker-class uvicorn.workers.UvicornWorker \
-    --bind 0.0.0.0:${PORT} \
-    --timeout 60 \
-    --graceful-timeout 30 \
-    --access-logfile - \
-    --error-logfile -"]
+# The start command is `docker/start.sh`, and the reasons it looks the way it does — `exec` so
+# gunicorn is PID 1 and gets SIGTERM, `$PORT` read at run time because Cloud Run assigns it,
+# `--graceful-timeout` so a revision swap drains — are written in the script, beside the flags they
+# protect. One process, no supervisor, no `&`.
+#
+# CMD rather than ENTRYPOINT, so `docker run <image> bash` still gives you a shell and the
+# migration job that runs this same image can replace the command outright.
+CMD ["/app/docker/start.sh"]

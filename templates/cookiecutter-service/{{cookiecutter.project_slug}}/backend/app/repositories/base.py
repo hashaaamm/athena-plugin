@@ -1,5 +1,8 @@
 """Generic data access. With `app/models`, the only layers allowed to import SQLAlchemy.
 
+`UserRepository` is what a subclass looks like: `class XRepository(BaseRepository[X])` with
+`model = X`, inheriting the four methods below before it writes a query of its own.
+
 Repositories `flush()`; they never `commit()`. `flush()` is what makes generated ids and constraint
 violations surface inside the caller's transaction, while it can still be rolled back.
 Ask Athena for the layered architecture rules; AGENTS.md rule 5 says the same thing.

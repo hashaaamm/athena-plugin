@@ -1,0 +1,144 @@
+# Build, push and deploy the frontend to Cloud Run.
+#
+# Its own workflow rather than more jobs in cd.yml, for the same reason frontend-ci.yml is separate
+# from ci.yml: the `paths:` filter is what keeps a backend change from rebuilding a bundle nothing
+# touched, and what keeps this pipeline's failures legible.
+#
+# Inert until configured: gated on `vars.WIF_PROVIDER`, so a freshly generated repository has a
+# reviewed deploy path that cannot fire by accident. Set the repository variables below and it
+# starts working — no edit to this file required.
+#
+#   WIF_PROVIDER               projects/…/workloadIdentityPools/…/providers/github
+#   DEPLOY_SA                  deployer@<project>.iam.gserviceaccount.com
+#   GCP_REGION                 europe-west1
+#   IMAGE_REPO                 europe-west1-docker.pkg.dev/<project>/<repo>
+#   CLOUD_RUN_FRONTEND_SERVICE the Cloud Run service serving the bundle
+#   SERVICE_URL                the backend's URL — compiled INTO the bundle, see below
+#   FRONTEND_API_URL           optional, and the only one a human sets: a domain you own
+#
+# All but the last are exported by `infra/pulumi` and copied in by
+# `./infra/scripts/sync-github.sh`, so the names on both sides cannot drift. A unit test in
+# infra/pulumi/tests asserts the match.
+#
+# **The ordering that makes this correct.** Vite inlines VITE_* at build time, so the API origin is
+# compiled into the JavaScript and cannot be changed afterwards by any amount of Cloud Run
+# configuration. The origin must therefore exist before the image is built, which is what the
+# sequence in infra/README.md guarantees: `pulumi up` creates the backend service and Cloud Run
+# assigns it a URL, `sync-github.sh` copies that URL into SERVICE_URL, and only then does this
+# workflow build. Building without it would produce a bundle calling http://localhost:8000 that
+# looks healthy and answers nothing, so the resolve step below fails the run instead.
+#
+# Copied verbatim by cookiecutter — see the note in ci.yml.
+name: Frontend CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-cd.yml'
+  # Also the way to rebuild after the API origin changes: nothing under frontend/ has to change
+  # for the bundle to be wrong.
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # required for Workload Identity Federation
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    if: vars.WIF_PROVIDER != ''
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # Resolved before anything is built, because the alternative is discovering it from a browser
+      # console after the deploy reported success. Read through `env:` rather than interpolated
+      # into the script: a repository variable is attacker-controlled input to a shell otherwise.
+      - name: Resolve the API origin
+        id: origin
+        env:
+          OVERRIDE: ${{ vars.FRONTEND_API_URL }}
+          FALLBACK: ${{ vars.SERVICE_URL }}
+        run: |
+          set -euo pipefail
+          origin="${OVERRIDE:-$FALLBACK}"
+          if [ -z "$origin" ]; then
+            echo "::error::Neither FRONTEND_API_URL nor SERVICE_URL is set, so this build would" \
+                 "compile http://localhost:8000 into the bundle. Run 'just infra-up' and then" \
+                 "'just infra-sync-github', then re-run this workflow."
+            exit 1
+          fi
+          echo "url=$origin" >> "$GITHUB_OUTPUT"
+          echo "the bundle will call $origin"
+
+      # Keyless: a downloaded service-account JSON key is a long-lived credential in a file, and
+      # the handbook bans them outright.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v2` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate to Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/docker/Dockerfile.prod
+          target: production
+          platforms: linux/amd64
+          push: true
+          # An immutable :sha tag, never :latest. A rollback is then a known image rather than a
+          # guess about what :latest pointed at last Tuesday.
+          tags: ${{ vars.IMAGE_REPO }}/${{ vars.CLOUD_RUN_FRONTEND_SERVICE }}:${{ github.sha }}
+          # A build arg and not an environment variable, because it is inlined into the JavaScript
+          # rather than read at runtime. The same value in `docker run` would arrive too late.
+          build-args: VITE_API_URL=${{ steps.origin.outputs.url }}
+          # An explicit scope. Without one both deploy pipelines write the same default GitHub
+          # Actions cache key and each run evicts the other's layers.
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      # `update`, not `deploy`. The shape of the service — service account, scaling, the probe —
+      # belongs to infrastructure-as-code. This pipeline owns exactly one field: the image. Two
+      # tools writing the same resource is how a plan fills up with phantom drift.
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          gcloud run services update "${{ vars.CLOUD_RUN_FRONTEND_SERVICE }}" \
+            --image "${{ vars.IMAGE_REPO }}/${{ vars.CLOUD_RUN_FRONTEND_SERVICE }}:${{ github.sha }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --quiet
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe "${{ vars.CLOUD_RUN_FRONTEND_SERVICE }}" \
+            --region "${{ vars.GCP_REGION }}" --format='value(status.url)')
+
+          # The index page: nginx started and the bundle is on disk.
+          curl -fsS "$URL/" >/dev/null
+
+          # A route the server has no file for. It must still answer 200 with index.html — that is
+          # the SPA fallback in docker/default.conf.template, and without it every hard refresh on
+          # a real route is a 404 that only the person who bookmarked it ever sees.
+          curl -fsS "$URL/a-route-that-only-the-client-knows" >/dev/null
+          echo "serving: $URL"

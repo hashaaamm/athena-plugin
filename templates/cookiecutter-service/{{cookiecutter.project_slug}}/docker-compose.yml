@@ -79,7 +79,10 @@ services:
     # corepack activates the exact pnpm pinned in package.json's `packageManager` field, so the
     # container and CI resolve dependencies identically. --frozen-lockfile makes a stale lockfile
     # a startup failure rather than a silent re-resolve: run `cd frontend && just lock` and commit.
-    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm dev"
+    # `exec` on the last command so Vite becomes PID 1 and receives SIGTERM directly.
+    # Without it `sh` holds PID 1, the signal never reaches Vite, and `docker compose down`
+    # waits out the full stop timeout on every shutdown.
+    command: sh -c "corepack enable && pnpm install --frozen-lockfile && exec pnpm dev"
     environment:
       # The BROWSER makes these requests, so this is the host's address, not `backend:8000`.
       # Vite inlines it at build time; here the dev server reads it on start.

@@ -56,13 +56,35 @@ CONFIG = StackConfig(
 )
 
 
-# --- Naming ---------------------------------------------------------------
+# --- The two environments -------------------------------------------------
+#
+# `environment` names resources and `app_environment` is what the application is told it is. They
+# are read as one thing constantly, and the failure is quiet: a `dev` stack deploying a service
+# that believes it is production serves no /docs and says nothing about why.
 
 
-def test_resource_names_carry_the_environment():
+def test_the_stack_environment_names_resources_and_the_app_never_sees_it():
     """Two environments must be able to share one project without colliding."""
     assert CONFIG.name("api") == "api-dev"
     assert CONFIG.name(SLUG, "migrate").endswith("-migrate-dev")
+
+
+def test_the_application_environment_is_configured_rather_than_hard_coded():
+    """A literal here is a stack whose name says `dev` and whose service believes it is prod."""
+    program = (PULUMI_DIR / "__main__.py").read_text()
+    assert '"ENVIRONMENT": config.app_environment' in program
+    assert CONFIG.app_environment == "staging", "a first deploy should still answer /docs"
+
+
+def test_an_application_environment_the_app_cannot_parse_is_refused():
+    """Caught here, or several minutes into an apply by a container that exits on startup."""
+    import dataclasses
+
+    with pytest.raises(ValueError, match="appEnvironment"):
+        dataclasses.replace(CONFIG, app_environment="dev")
+
+
+# --- Naming ---------------------------------------------------------------
 
 
 def test_service_account_ids_fit_what_gcp_accepts():
@@ -219,20 +241,37 @@ def test_every_container_without_a_version_is_declared_manual():
         accessor_email="runtime@test.iam.gserviceaccount.com",
 {%- if cookiecutter.use_postgres == "yes" %}
         database_url="postgresql+asyncpg://app:pw@/app?host=/cloudsql/x",
+        jwt_secret="not-the-real-one-the-stack-generates-it",
 {%- endif %}
     )
     generated = set(secrets.ids) - set(MANUAL_SECRETS)
     assert len(secrets.versions) == len(generated)
+{%- if cookiecutter.use_postgres == "yes" %}
+    # The signing key in particular: a service that cannot resolve it does not start, so
+    # "populate it later" is not an option the way it is for a Sentry DSN.
+    assert "jwt-secret" in generated
+{%- endif %}
     return pulumi.Output.from_input(True)
 
 
 def test_no_secret_value_is_written_into_the_stack_source():
-    """Secret values never appear in infrastructure code. The one `secret_data=` is the generated
-    database DSN, which no human ever types."""
+    """Secret values never appear in infrastructure code. The one `secret_data=` is a parameter,
+    and what reaches it — the database DSN, the signing key — is generated, never typed."""
     for source in (PULUMI_DIR / "components").glob("*.py"):
         for line in source.read_text().splitlines():
             if "secret_data=" in line:
                 assert "value" in line, f"{source.name}: {line.strip()}"
+{%- if cookiecutter.use_postgres == "yes" %}
+
+
+def test_the_migration_job_is_not_granted_the_signing_key():
+    """It signs nothing. A job holding a credential it never uses is a credential with a second
+    place to leak from, and this one is the whole of the auth system."""
+    program = (PULUMI_DIR / "__main__.py").read_text()
+    assert 'SECRET_ENV["JWT_SECRET"] = "jwt-secret"' in program
+    job = program.partition("JobSpec(")[2].partition(")")[0]
+    assert "jwt-secret" not in job, job
+{%- endif %}
 
 
 # --- Cloud Run shape ------------------------------------------------------
@@ -315,6 +354,36 @@ def test_the_bootstrap_script_enables_what_the_stack_cannot():
     assert not set(BOOTSTRAP) & set(REQUIRED)
 
 
+# --- Teardown -------------------------------------------------------------
+
+
+def test_the_teardown_script_names_what_the_bootstrap_script_created():
+    """`pulumi destroy` cannot reach the state bucket or the KMS key — the stack never created
+    them — so teardown.sh is the only thing that ever removes them. If its names drift from the
+    ones state-bucket.sh created, it deletes nothing, exits 0, and the resources keep billing."""
+    from components.identities import KEY, KEYRING, STATE_BUCKET_SUFFIX
+
+    bootstrap = PULUMI_DIR.parent / "bootstrap"
+    for source in (
+        (bootstrap / "state-bucket.sh").read_text(),
+        (bootstrap / "teardown.sh").read_text(),
+    ):
+        assert STATE_BUCKET_SUFFIX in source
+        assert f'KEYRING="{KEYRING}"' in source
+        assert f'KEY="{KEY}"' in source
+
+
+def test_the_teardown_script_cannot_strand_a_stack():
+    """Deleting the state bucket while any stack still holds resources leaves those resources
+    running, billing, and with no record of what they are. Checking rather than warning is the
+    whole reason this is a script and not three gcloud lines in a README, and the confirmation is
+    the same bet `pulumi up` makes: refuse rather than guess when nothing can answer."""
+    script = (PULUMI_DIR.parent / "bootstrap" / "teardown.sh").read_text()
+    assert "stack export" in script, "the emptiness check is the guard; do not remove it"
+    assert "! -t 0" in script, "must refuse when nothing can confirm"
+    assert '"${reply}" != "${BUCKET}"' in script, "must make a human type the bucket name"
+
+
 def test_every_service_the_stack_uses_has_its_api_enabled():
     """A missing API surfaces as a mid-apply failure with half the stack created."""
     from components.apis import BOOTSTRAP, REQUIRED
@@ -341,22 +410,42 @@ def test_every_service_the_stack_uses_has_its_api_enabled():
 # because it is gated on a variable nothing ever sets.
 
 #: Repository variables a human sets by hand, because they come from outside this stack.
-MANUAL_VARIABLES = {"SENTRY_ORG", "SENTRY_PROJECT"}
+MANUAL_VARIABLES = {
+    "SENTRY_ORG",
+    "SENTRY_PROJECT",
+{%- if cookiecutter.include_frontend == "yes" %}
+    # Only needed when the API answers on a domain you own rather than on its Cloud Run URL.
+    # Unset, the frontend build falls back to SERVICE_URL, which this stack does export.
+    "FRONTEND_API_URL",
+{%- endif %}
+}
+
+#: Every workflow that deploys something. Each one is a fresh chance for a variable name to drift
+#: from the stack that is supposed to supply it, so each one is checked.
+{%- if cookiecutter.include_frontend == "yes" %}
+DEPLOY_WORKFLOWS = (
+    "cd.yml",
+    "frontend-cd.yml",
+)
+{%- else %}
+DEPLOY_WORKFLOWS = ("cd.yml",)
+{%- endif %}
 
 
-def _cd_workflow() -> str:
-    return (REPO / ".github" / "workflows" / "cd.yml").read_text()
+def _workflow(name: str) -> str:
+    return (REPO / ".github" / "workflows" / name).read_text()
 
 
 def _sync_script() -> str:
     return (PULUMI_DIR.parent / "scripts" / "sync-github.sh").read_text()
 
 
-def test_every_variable_the_deploy_reads_is_one_the_sync_script_sets():
-    referenced = set(re.findall(r"vars\.([A-Z0-9_]+)", _cd_workflow())) - MANUAL_VARIABLES
+def test_every_variable_a_deploy_reads_is_one_the_sync_script_sets():
     provided = set(re.findall(r"gh variable set \"?([A-Z0-9_]+)", _sync_script()))
     provided |= set(re.findall(r'"[a-z_]+:([A-Z0-9_]+)"', _sync_script()))
-    assert referenced <= provided, f"never set: {sorted(referenced - provided)}"
+    for name in DEPLOY_WORKFLOWS:
+        referenced = set(re.findall(r"vars\.([A-Z0-9_]+)", _workflow(name))) - MANUAL_VARIABLES
+        assert referenced <= provided, f"{name}: never set: {sorted(referenced - provided)}"
 
 
 def test_every_output_the_sync_script_reads_is_one_the_stack_exports():
@@ -366,10 +455,40 @@ def test_every_output_the_sync_script_reads_is_one_the_stack_exports():
     assert mapped <= exported, f"never exported: {sorted(mapped - exported)}"
 
 
-def test_the_deploy_stays_inert_until_it_is_configured():
+def test_every_deploy_stays_inert_until_it_is_configured():
     """A committed deploy path that cannot fire by accident is reviewed alongside the code it
     ships, rather than written under pressure on the day."""
-    assert "if: vars.WIF_PROVIDER != ''" in _cd_workflow()
+    for name in DEPLOY_WORKFLOWS:
+        assert "if: vars.WIF_PROVIDER != ''" in _workflow(name), name
+
+
+def test_every_deploy_is_filtered_to_the_component_it_deploys():
+    """Without a filter, a typo fix in a README rebuilds and redeploys a container."""
+    for name in DEPLOY_WORKFLOWS:
+        assert "paths:" in _workflow(name), name
+
+
+def test_every_deploy_tags_the_image_with_the_commit_rather_than_latest():
+    """A rollback has to be able to name an image. `:latest` is a guess about what it pointed at
+    last Tuesday, and two pipelines racing on it is a deploy nobody can reconstruct."""
+    for name in DEPLOY_WORKFLOWS:
+        workflow = _workflow(name)
+        steps = [line for line in workflow.splitlines() if not line.lstrip().startswith("#")]
+        assert ":latest" not in "\n".join(steps), name
+        assert "github.sha" in workflow, name
+
+
+def test_no_deploy_workflow_carries_a_cookiecutter_variable():
+    """`.github/workflows/` is `_copy_without_render`, because a GitHub Actions expression and a
+    Jinja one are written with the same two braces. A cookiecutter variable in one of these files
+    is therefore never substituted: it survives into the generated repository as literal text."""
+    # The patterns are written with a character class around the second brace so that this file —
+    # which *is* rendered — contains no Jinja delimiter of its own. Spelling them literally would
+    # make the test an expression cookiecutter evaluates rather than text it copies.
+    for name in DEPLOY_WORKFLOWS:
+        workflow = _workflow(name)
+        assert not re.search(r"\{[{]\s*cookiecutter", workflow), name
+        assert not re.search(r"\{[%]", workflow), name
 {%- if cookiecutter.use_postgres == "yes" %}
 
 
@@ -463,4 +582,83 @@ def test_the_sentry_container_is_created_empty_and_mounted_by_nothing():
     assert secrets.versions == []
     assert CONFIG.sentry_dsn_set is False
     return pulumi.Output.from_input(True)
+{%- endif %}
+{%- if cookiecutter.include_frontend == "yes" %}
+
+
+# --- The frontend ---------------------------------------------------------
+#
+# The failure this section exists to prevent: a generated repository that has a React application,
+# a CI pipeline that builds it, and nothing anywhere that deploys it.
+
+
+def _program() -> str:
+    return (PULUMI_DIR / "__main__.py").read_text()
+
+
+def test_the_frontend_has_its_own_runtime_account():
+    """Sharing the backend's account would hand a public static web server — the least protected
+    surface here, with no application code in it — the backend's database role and whatever secret
+    grants it collects later."""
+    from components.identities import RUNTIME_ROLES, WEB_RUNTIME_ROLES
+
+    identities = Identities(CONFIG, project_number="123456789")
+    assert identities.web_runtime is not identities.runtime
+    assert CONFIG.account_id("web") != CONFIG.account_id("run")
+    for role in WEB_RUNTIME_ROLES:
+        assert "sql" not in role and "secret" not in role, role
+    # Never more than the service it sits in front of.
+    assert set(WEB_RUNTIME_ROLES) <= set(RUNTIME_ROLES)
+
+
+@pulumi.runtime.test
+def test_the_frontend_probes_a_path_nginx_actually_serves():
+    """`/health/live` is a backend route and a static bundle does not have one. A startup probe
+    pointed at it fails forever, and the first revision never takes traffic."""
+    frontend = Service(
+        CONFIG,
+        app=f"{SLUG}-web",
+        runtime_email="web-runtime@test.iam.gserviceaccount.com",
+        port=8080,
+        health_path="/",
+    )
+
+    def check(template):
+        container = template.containers[0]
+        assert container.startup_probe.http_get.path == "/"
+        assert container.startup_probe.http_get.port == 8080
+        # No database, no secret, no environment: this container serves files off its own disk,
+        # and every value the bundle needed was inlined before the image existed.
+        assert template.volumes == []
+        assert container.volume_mounts == []
+        assert container.envs == []
+        return True
+
+    return frontend.service.template.apply(check)
+
+
+def test_the_composition_root_declares_a_service_for_the_frontend():
+    program = _program()
+    assert 'app=f"{config.slug}-web"' in program
+    assert "runtime_email=identities.web_runtime.email" in program
+    assert 'health_path="/"' in program
+    assert 'pulumi.export("cloud_run_frontend_service"' in program
+
+
+def test_the_backend_allows_the_deployed_frontend_origin():
+    """Otherwise the SPA loads, makes exactly one request, and the browser refuses the answer —
+    which reads as an API outage rather than as a missing allowlist entry. The origin is a Cloud
+    Run URL, so it cannot be typed in ahead of time; it has to be wired from the stack."""
+    assert 'BACKEND_ENV["CORS_ORIGINS"] = frontend.url' in _program()
+
+
+def test_the_frontend_bundle_is_compiled_against_an_origin_the_stack_supplies():
+    """Vite inlines VITE_API_URL at BUILD time, so the API origin is baked into the JavaScript and
+    no amount of Cloud Run configuration changes it afterwards. A build that runs before the
+    backend has a URL produces a bundle calling localhost that deploys, serves and answers
+    nothing — so the pipeline fails the run instead of shipping it."""
+    workflow = _workflow("frontend-cd.yml")
+    assert "VITE_API_URL=" in workflow
+    assert "vars.SERVICE_URL" in workflow
+    assert "::error::" in workflow
 {%- endif %}

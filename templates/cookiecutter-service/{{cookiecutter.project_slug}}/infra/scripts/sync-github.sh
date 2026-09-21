@@ -43,6 +43,10 @@ declare -a MAPPING=(
   "runtime_sa:RUNTIME_SA"
   "cloud_run_service:CLOUD_RUN_SERVICE"
   "service_url:SERVICE_URL"
+{%- if cookiecutter.include_frontend == "yes" %}
+  "cloud_run_frontend_service:CLOUD_RUN_FRONTEND_SERVICE"
+  "frontend_url:FRONTEND_URL"
+{%- endif %}
 )
 
 for entry in "${MAPPING[@]}"; do
@@ -78,3 +82,16 @@ Two things this script cannot do, because their values come from outside the sta
       gcloud secrets versions add <secret-id> --data-file=- --project=\$(read_output gcp_project)
 
 EOF
+{%- if cookiecutter.include_frontend == "yes" %}
+
+cat <<EOF
+SERVICE_URL is now set, and frontend-cd.yml compiles it into the bundle as VITE_API_URL. That is
+why this script runs before the first merge to main and not after: a bundle built without it
+would ship pointing at http://localhost:8000, load fine, and fail every request.
+
+Re-run this script whenever the backend's URL changes, then re-run the Frontend CD workflow — the
+origin is baked into the image, so an old image keeps calling the old address. If the API answers
+on a domain you own instead, set FRONTEND_API_URL by hand; it wins over SERVICE_URL.
+
+EOF
+{%- endif %}

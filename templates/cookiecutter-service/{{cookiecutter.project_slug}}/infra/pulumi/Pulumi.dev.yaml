@@ -6,7 +6,15 @@
 config:
   {{ cookiecutter.project_slug }}:project: {{ cookiecutter.gcp_project_id }}
   {{ cookiecutter.project_slug }}:region: {{ cookiecutter.gcp_region }}
+  # The STACK's environment. All it does is name resources — `api-dev`, and every account,
+  # secret and repository with the same suffix. The application never sees it.
   {{ cookiecutter.project_slug }}:environment: dev
+  # The APPLICATION's environment: the `ENVIRONMENT` variable on the Cloud Run revision, and one
+  # of local / test / staging / production. It decides how the service behaves — `production`
+  # serves no `/docs` and no `/openapi.json`. Separate from the line above because a stack called
+  # `dev` that the whole company can reach is production to the application, and a stack called
+  # `prod` standing up a demo is not. Set it to `production` in the stack real users reach.
+  {{ cookiecutter.project_slug }}:appEnvironment: staging
   # Every resource name is built from this, so it is not decoration: changing it renames the
   # Cloud Run service, the registry repository and the service accounts.
   {{ cookiecutter.project_slug }}:slug: {{ cookiecutter.project_slug }}
@@ -19,7 +27,8 @@ config:
   {{ cookiecutter.project_slug }}:maxInstances: "4"
 {%- if cookiecutter.use_postgres == "yes" %}
   # Cloud SQL. Shared-core with 10 GB of HDD is the floor for a managed Postgres on GCP, and it is
-  # the only standing charge in this stack.
+  # the only standing charge in this stack. There is no cheaper setting to find: infra/README.md
+  # has the table of why each value is already its minimum, and what the floor costs you.
   {{ cookiecutter.project_slug }}:databaseTier: db-f1-micro
   {{ cookiecutter.project_slug }}:databaseDiskGb: "10"
 {%- endif %}

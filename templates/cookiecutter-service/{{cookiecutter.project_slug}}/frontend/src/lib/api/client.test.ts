@@ -17,13 +17,13 @@ describe("unwrap", () => {
 
   it("raises the backend's error code, not just its prose", () => {
     const failure = result(404, {
-      error: { error: { code: "item_not_found", message: "No such item" } },
+      error: { error: { code: "not_found", message: "No such resource" } },
     });
     expect(() => unwrap(failure)).toThrow(ApiError);
     try {
       unwrap(failure);
     } catch (err) {
-      expect(err).toMatchObject({ status: 404, code: "item_not_found", message: "No such item" });
+      expect(err).toMatchObject({ status: 404, code: "not_found", message: "No such resource" });
     }
   });
 

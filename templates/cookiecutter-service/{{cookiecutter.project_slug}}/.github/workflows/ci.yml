@@ -49,8 +49,13 @@ jobs:
       - run: uv run ruff format --check app/ tests/
       - run: uv run mypy app/
       - run: uv run lint-imports     # the layer contracts, mechanically
+      # Counting heads, not `alembic check`. This job has no database and no POSTGRES_*, and
+      # `alembic check` compares the models against a live one — it resolves the compose hostname
+      # `db`, fails on DNS, and says nothing about migrations. `alembic heads` reads the versions
+      # directory and nothing else. The guard in front is for a project generated without a
+      # database, which has no `alembic/` at all.
       - name: Single migration head
-        run: uv run alembic check || test ! -d alembic
+        run: test ! -d alembic || test "$(uv run alembic heads | wc -l | tr -d ' ')" -eq 1
 
   test:
     name: Tests

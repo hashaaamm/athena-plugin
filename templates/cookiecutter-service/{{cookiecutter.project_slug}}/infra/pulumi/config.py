@@ -19,6 +19,11 @@ MAX_ACCOUNT_ID = 30
 #: Workload Identity Pool ids are 4-32 characters, and the same squeeze applies.
 MAX_POOL_ID = 32
 
+#: What `ENVIRONMENT` may be set to on the deployed service. It is `app/core/config.py`'s
+#: `Environment` literal, and nothing else parses: a typo here is a container that exits on its
+#: first settings load, several minutes into an apply.
+APP_ENVIRONMENTS = ("local", "test", "staging", "production")
+
 #: Characters of digest appended to a pool id. Four is 65,536 values, which is not a cryptographic
 #: guarantee and does not need to be: the thing it separates is two services a human deliberately
 #: named in one project, not an adversary hunting a collision.
@@ -50,6 +55,20 @@ class StackConfig:
     #: The base name every resource is derived from — the cookiecutter slug.
     slug: str
 
+    #: What the *application* is told it is running as, which is a different question from what
+    #: this stack is called. `environment` above names resources — it is why the Cloud Run service
+    #: is `api-dev` — and the application has never heard of it. This one is the `ENVIRONMENT`
+    #: variable on the revision, and it decides how the service behaves: whether `/docs` is
+    #: served, whether a placeholder database password is refused, how logs are formatted.
+    #:
+    #: They are set separately because they vary separately. A `dev` stack that anyone outside the
+    #: team can reach is `production` to the application; a `prod` stack standing in for a
+    #: customer demo is not. Defaulting to `staging` is the honest reading of a first deploy:
+    #: production-shaped logging and a placeholder password still refused, with `/docs` reachable,
+    #: because the first thing anybody does with a new URL is open it and look for the API.
+    #: Set it to `production` in the stack that real users reach. See infra/README.md.
+    app_environment: str = "staging"
+
     min_instances: int = 0
     max_instances: int = 4
 {%- if cookiecutter.use_postgres == "yes" %}
@@ -69,8 +88,17 @@ class StackConfig:
     sentry_dsn_set: bool = False
 {%- endif %}
 
+    def __post_init__(self) -> None:
+        if self.app_environment not in APP_ENVIRONMENTS:
+            raise ValueError(
+                f"appEnvironment {self.app_environment!r} is not one of {APP_ENVIRONMENTS}"
+            )
+
     @property
     def is_production(self) -> bool:
+        """Whether this *stack* is the production one. Deletion protection and point-in-time
+        recovery hang off it, and neither is a question about how the application behaves —
+        `app_environment` is that question."""
         return self.environment == "prod"
 
     def name(self, *parts: str) -> str:
@@ -133,6 +161,7 @@ def load() -> StackConfig:
         environment=config.require("environment"),
         github_repository=config.require("githubRepository"),
         slug=config.require("slug"),
+        app_environment=config.get("appEnvironment") or "staging",
         min_instances=config.get_int("minInstances") or 0,
         max_instances=config.get_int("maxInstances") or 4,
 {%- if cookiecutter.use_postgres == "yes" %}

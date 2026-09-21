@@ -7,10 +7,14 @@ generating a credential nothing else ever needs to know.
 
 So there are two kinds of secret here, and they behave differently:
 
-* **Generated.** The database DSN. Nobody types it, and it is encrypted in state with the KMS key
-  the bootstrap script created. It has a version the moment the stack applies, which matters:
-  Cloud Run resolves `secret:latest` when a revision is *created*, so a container with no versions
-  is a deploy that fails outright rather than a service missing a feature.
+* **Generated.** Values this stack mints and no human ever reads.
+{%- if cookiecutter.use_postgres == "yes" %}
+  The database DSN and the token signing key.
+{%- endif %}
+  They are encrypted in state with the KMS key the bootstrap script created, and they have a
+  version the moment the stack applies. That last part matters: Cloud Run resolves
+  `secret:latest` when a revision is *created*, so a container with no versions is a deploy that
+  fails outright rather than a service missing a feature.
 * **Manual.** Anything that genuinely originates outside — a Sentry DSN, a third-party API key.
   The stack creates the empty container and grants access to it; a human adds the value with
   `gcloud secrets versions add`. Because the container starts empty, nothing may mount it until
@@ -39,6 +43,7 @@ class Secrets(pulumi.ComponentResource):
         config: StackConfig,
         accessor_email: pulumi.Input[str],
         database_url: pulumi.Input[str] | None = None,
+        jwt_secret: pulumi.Input[str] | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ) -> None:
         super().__init__("service:infra:Secrets", config.name("secrets"), None, opts)
@@ -56,6 +61,9 @@ class Secrets(pulumi.ComponentResource):
 
         if database_url is not None:
             self._versioned(config, "database-url", member, database_url)
+
+        if jwt_secret is not None:
+            self._versioned(config, "jwt-secret", member, jwt_secret)
 
         for name in MANUAL_SECRETS:
             self._container(config, name, member)

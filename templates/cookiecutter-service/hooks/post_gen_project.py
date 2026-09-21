@@ -14,11 +14,17 @@ from pathlib import Path
 
 PROJECT = Path.cwd()
 
-#: Scripts a human runs directly. Cookiecutter writes rendered files with the default mode, so the
-#: executable bit has to be set here or `./infra/bootstrap/state-bucket.sh` fails with "permission
-#: denied" on the first command of the whole deployment sequence.
+#: Scripts a human or a container runs directly. Cookiecutter writes rendered files with the
+#: default mode, so the executable bit has to be set here or `./infra/bootstrap/state-bucket.sh`
+#: fails with "permission denied" on the first command of the whole deployment sequence.
+#:
+#: `backend/docker/start.sh` is the production container's start command. The image copies it with
+#: `--chmod=0755`, so a build does not depend on this list; the bit is set here so the same script
+#: is runnable by hand from a checkout, which is half the point of it being a file.
 EXECUTABLE = (
+    "backend/docker/start.sh",
     "infra/bootstrap/state-bucket.sh",
+    "infra/bootstrap/teardown.sh",
     "infra/scripts/sync-github.sh",
 )
 
@@ -41,47 +47,70 @@ def main() -> None:
     if not INCLUDE_FRONTEND:
         # The backend does not reference frontend/ anywhere, so removing it is a clean cut.
         # Adding it back later means creating the directory, not restructuring the repo.
-        # Its workflow and its CORS test go with it: a pipeline filtered on a path that does not
-        # exist never runs and never says so, and CORS is only a question once a browser asks it.
+        # Both its workflows and its CORS test go with it: a pipeline filtered on a path that does
+        # not exist never runs and never says so, and CORS is only a question once a browser asks.
         _remove(
             "frontend",
             ".github/workflows/frontend-ci.yml",
+            ".github/workflows/frontend-cd.yml",
             "backend/tests/test_cors.py",
-        )
-    elif not USE_POSTGRES:
-        # The frontend's example resource is the backend's example resource. With no database
-        # there is no /api/v1/items to call, so the pages that call it go too — the dashboard
-        # and the generated API client are written to work either way.
-        _remove(
-            "frontend/src/lib/api/items.ts",
-            "frontend/src/lib/api/items.test.ts",
-            "frontend/src/routes/items.tsx",
-            "frontend/src/routes/items.test.tsx",
         )
 
     if not USE_SENTRY:
         _remove("backend/app/core/observability.py")
 
     if not USE_POSTGRES:
-        # No database means no migrations and no example resource to persist. The layer packages
-        # stay — an empty repositories/ is the signal of where data access goes when it arrives.
+        # No database means no migrations, no ORM and no session to hand a repository. The layer
+        # packages stay — an empty repositories/ is the signal of where data access goes when it
+        # arrives — and readiness drops to the version check it already falls back to.
         _remove(
             "backend/alembic",
             "backend/alembic.ini",
             "backend/app/core/database.py",
             "backend/app/models/base.py",
-            "backend/app/repositories/health_repository.py",
-            "backend/tests/helpers.py",
-            "backend/app/models/item.py",
             "backend/app/repositories/base.py",
-            "backend/app/repositories/item_repository.py",
-            "backend/app/services/item_service.py",
-            "backend/app/schemas/item.py",
-            "backend/app/api/v1/item.py",
-            "backend/app/seed.py",
+            "backend/app/repositories/health_repository.py",
             "backend/tests/test_config_database.py",
-            "backend/tests/test_item_api.py",
-            "backend/tests/test_item_service.py",
+        )
+        # And no database means no users, which means no authentication. There is nowhere to put
+        # an account and nothing to verify a password against, so the whole auth example goes
+        # rather than shipping half of it: a service with no user table cannot be closed by
+        # adding a dependency, and pretending otherwise is worse than leaving it open. Turning
+        # `use_postgres` back on is a regeneration, and it brings all of this with it.
+        _remove(
+            "backend/app/api/v1/auth.py",
+            "backend/app/core/security",
+            "backend/app/models/user.py",
+            "backend/app/repositories/user_repository.py",
+            "backend/app/schemas/auth.py",
+            "backend/app/services/auth_service.py",
+            "backend/tests/helpers.py",
+            "backend/tests/test_auth_api.py",
+            "backend/tests/test_auth_service.py",
+            "backend/tests/test_password_hashing.py",
+            "backend/tests/test_signing_key.py",
+            "backend/tests/test_tokens.py",
+        )
+        # The web client's half of the same cut. A sign-in form posting to an endpoint that was
+        # deleted three paragraphs ago is worse than no sign-in form: it compiles, it renders,
+        # and it fails in a browser. The shared files — router, shell, API client, README and
+        # AGENTS.md — branch in Jinja instead, because they exist either way. Harmless when
+        # `include_frontend` is "no": frontend/ has already gone and `_remove` skips what is
+        # not there.
+        _remove(
+            "frontend/src/components/auth-card.tsx",
+            "frontend/src/lib/api/auth.ts",
+            "frontend/src/lib/api/auth.test.ts",
+            "frontend/src/lib/auth.ts",
+            "frontend/src/lib/auth.test.ts",
+            "frontend/src/lib/use-session.ts",
+            "frontend/src/routes/account.tsx",
+            "frontend/src/routes/account.test.tsx",
+            "frontend/src/routes/login.tsx",
+            "frontend/src/routes/login.test.tsx",
+            "frontend/src/routes/register.tsx",
+            "frontend/src/routes/register.test.tsx",
+            "frontend/src/test-router.tsx",
         )
         # No database means nothing to provision one for. The rest of the stack is unchanged:
         # a service, a registry, two identities and the secrets it reads.

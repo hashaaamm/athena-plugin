@@ -26,6 +26,16 @@ RUNTIME_ROLES = (
 {%- else %}
 RUNTIME_ROLES = ("roles/logging.logWriter",)
 {%- endif %}
+{%- if cookiecutter.include_frontend == "yes" %}
+
+#: Granted to the Cloud Run service that serves the built frontend bundle.
+#:
+#: Its own account rather than the backend's, and the list is short because nginx serving static
+#: files reads no database and no secret. Sharing the backend's account would hand the least
+#: protected surface in the system — a public web server with no application code in it — the
+#: backend's Cloud SQL client role and whatever secret grants it accumulates.
+WEB_RUNTIME_ROLES = ("roles/logging.logWriter",)
+{%- endif %}
 
 #: Granted to the GitHub Actions identity.
 #:
@@ -69,6 +79,17 @@ class Identities(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self),
         )
         self._bind(config, "runtime", self.runtime, RUNTIME_ROLES)
+{%- if cookiecutter.include_frontend == "yes" %}
+
+        self.web_runtime = gcp.serviceaccount.Account(
+            "web-runtime-sa",
+            project=config.project,
+            account_id=config.account_id("web"),
+            display_name=f"{config.slug} frontend runtime",
+            opts=pulumi.ResourceOptions(parent=self),
+        )
+        self._bind(config, "web-runtime", self.web_runtime, WEB_RUNTIME_ROLES)
+{%- endif %}
 
         self.ci = gcp.serviceaccount.Account(
             "ci-sa",
@@ -89,6 +110,19 @@ class Identities(pulumi.ComponentResource):
             member=self.ci.email.apply(lambda email: f"serviceAccount:{email}"),
             opts=pulumi.ResourceOptions(parent=self),
         )
+{%- if cookiecutter.include_frontend == "yes" %}
+
+        # The same permission for the frontend's account. Granted per account rather than at the
+        # project level: `roles/iam.serviceAccountUser` on the project is the right to run anything
+        # as any account in it.
+        gcp.serviceaccount.IAMMember(
+            "ci-acts-as-web-runtime",
+            service_account_id=self.web_runtime.name,
+            role="roles/iam.serviceAccountUser",
+            member=self.ci.email.apply(lambda email: f"serviceAccount:{email}"),
+            opts=pulumi.ResourceOptions(parent=self),
+        )
+{%- endif %}
 
         # Read and write the Pulumi state bucket, so the preview job on a pull request can select
         # the stack. Bucket-scoped rather than a project storage role, because a project-level

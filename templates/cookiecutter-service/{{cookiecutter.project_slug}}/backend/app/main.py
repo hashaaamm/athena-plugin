@@ -26,6 +26,9 @@ from app.core.logging import configure_logging
 {%- if cookiecutter.use_sentry == "yes" %}
 from app.core.observability import init_sentry
 {%- endif %}
+{%- if cookiecutter.use_postgres == "yes" %}
+from app.core.security.tokens import require_signing_key
+{%- endif %}
 
 logger = structlog.get_logger(__name__)
 
@@ -51,6 +54,12 @@ def _lifespan(settings: Settings):  # type: ignore[no-untyped-def]
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+{%- if cookiecutter.use_postgres == "yes" %}
+    # Before anything else: a deployed server must not start with a guessable signing key. Here
+    # and not in the Settings validator, because the migration job is granted no key and signs
+    # nothing — see `app/core/security/tokens.py`.
+    require_signing_key(settings)
+{%- endif %}
 
     app = FastAPI(
         title="{{ cookiecutter.project_name }}",

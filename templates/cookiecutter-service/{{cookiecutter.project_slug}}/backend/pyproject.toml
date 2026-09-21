@@ -19,6 +19,17 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.14",
     "asyncpg>=0.30",
+    # --- Authentication ---
+    # PyJWT signs and verifies JWTs and does nothing else, which is why it is the approved choice.
+    # `python-jose` is banned: algorithm-confusion advisories and `alg=none` acceptance.
+    "pyjwt>=2.10",
+    # The `[argon2]` extra is not optional — plain `pwdlib` installs no hasher at all and fails
+    # with an ImportError naming argon2 the first time anybody registers.
+    "pwdlib[argon2]>=0.2",
+    # Already present transitively through Starlette; declared because `app/core/security/
+    # passwords.py` imports it directly, and a direct import of an undeclared dependency breaks
+    # whenever the transitive one moves.
+    "anyio>=4.6",
     {%- endif %}
     # --- Cross-cutting ---
     "structlog>=24.4",

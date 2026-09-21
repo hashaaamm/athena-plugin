@@ -26,6 +26,74 @@ in your summary that you added one.
   down".
 - **No secret is a `VITE_` variable.** They are inlined into the bundle and shipped to the
   browser. Ask Athena for the secrets-management rules.
+{%- if cookiecutter.use_postgres == "yes" %}
+
+## Authentication
+
+Four endpoints — `register`, `login`, `me`, `change-password` — and three decisions that were
+made once. Read this before touching `src/lib/auth.ts`, `src/lib/api/auth.ts` or the guard in
+`src/router.tsx`.
+
+### The token lives in `sessionStorage`
+
+**What that bought.** The session survives a page refresh. The access token lasts fifteen minutes
+and this backend has no refresh endpoint, so an in-memory-only token means F5 signs the user out
+— for a form half filled in, that is the difference between a demo and a product.
+
+**What it cost, plainly.** `sessionStorage` is **not** protected from cross-site scripting. Any
+script that executes in this page can read the token and use it until it expires, exactly as it
+could read `localStorage`. Choosing `sessionStorage` over `localStorage` did not buy XSS safety;
+it bought a smaller blast radius — the token is scoped to one tab, it is gone when that tab
+closes, and a second tab starts signed out. The visible cost is that last part: open a link in a
+new tab and you are not signed in there.
+
+**If you are holding data worth stealing, do it differently.** The shape that removes the XSS
+exposure is an httpOnly, `Secure`, `SameSite` cookie the browser attaches and JavaScript cannot
+read, with a short-lived access token kept in memory and a refresh endpoint to renew it — plus
+CSRF protection, because a cookie is sent on requests you did not initiate. That is backend work
+this template has not done; ask Athena for the JWT authentication guide, whose refresh-and-
+revocation step is where it starts. Do not simply move the token to `localStorage` and call it
+persistence — that is strictly more exposure for a convenience the fifteen-minute lifetime does
+not justify.
+
+### A 401 is handled once, in middleware
+
+`enforceSession` in `src/lib/auth.ts`, registered as `onResponse` middleware in
+`src/lib/api/client.ts`. It clears the token and hard-navigates to `/login` — a full document
+load, so the TanStack Query cache goes with the session rather than sitting in memory for the
+next person at the keyboard.
+
+Two guards make it safe, and both are tested: it does nothing when we held no token (a failed
+sign-in is not a lost session), and it does not redirect to `/login` from `/login` (that is the
+reload loop). **No component, hook or page handles a 401.** Adding one is how two behaviours
+appear for the same status.
+
+A **403 is not a 401** and must never be treated as one. `POST /auth/change-password` answers 403
+for a wrong current password precisely so the session survives and the form shows the error.
+
+### Route protection is a pathless layout route
+
+`authenticatedRoute` in `src/router.tsx` holds the `beforeLoad` guard; anything that reads a user
+goes under it. The dashboard deliberately does not: it reads the public `/health/ready` and it is
+the screen that tells you the backend is unreachable, which is exactly when sign-in cannot work.
+
+An unauthenticated visitor lands on `/login`. There is no `next` parameter — with one guarded
+route it buys nothing, and a `next` read from the URL and navigated to is an open redirect unless
+it is validated against the route tree. Add it, validated, when a second page goes behind the
+guard.
+
+### Errors are the server's words, with one exception
+
+Render `ApiError.message`. The exception is sign-in: **every** credential failure shows one fixed
+sentence, so the UI cannot undo the backend's refusal to say whether an address is registered.
+401 and 422 are the same sentence there for the same reason. Registration does disclose a taken
+address — that is the backend's deliberate choice, not an accident to copy into the login form.
+
+### Out of scope, on purpose
+
+No refresh flow, no logout-everywhere, no roles, no password reset, no "remember me". The backend
+has none of them. Each one is a backend change first.
+{%- endif %}
 
 ## Where a change goes
 
@@ -46,7 +114,7 @@ invocation in a script or a workflow.
 | Run the stack | `just dev` (frontend on :3000, backend on :8000) |
 | Lint and type check | `just lint` |
 | Tests | `just test` |
-| One test file | `cd frontend && just test-one src/routes/items.test.tsx` |
+| One test file | `cd frontend && just test-one src/lib/api/client.test.ts` |
 | Regenerate the API client | `just gen-api` |
 | Everything CI runs | `just check` |
 
@@ -63,6 +131,11 @@ invocation in a script or a workflow.
 
 - Do not disable an ESLint rule, add `@ts-expect-error`, or cast to `any` to get to green.
   Surface the conflict instead.
+{%- if cookiecutter.use_postgres == "yes" %}
+- Do not handle a 401 anywhere but `enforceSession`, and do not read the token from anywhere but
+  `src/lib/auth.ts`.
+- Do not tell a user at sign-in whether an email address has an account.
+{%- endif %}
 - Do not edit `src/lib/api/schema.d.ts`.
 - Do not introduce a second state library, a second HTTP client, or a second styling system.
 - Do not reach past the shell for chrome. A page that renders its own sidebar is a page that

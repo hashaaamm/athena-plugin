@@ -1,10 +1,15 @@
-"""create items
+"""create users
 
 Revision ID: 0001
 Revises:
 Create Date: generated with the template
 
-The example resource's table. Delete it along with the example resource once you have a real one.
+The only table the template ships, and the root of this project's history. Every later revision
+hangs off it, so `alembic revision --autogenerate` writes a child rather than a second head.
+
+Do not delete it to "start clean". A revision that has run against a database somewhere is part of
+that database's history; dropping it from the repository makes `alembic current` point at a
+revision the code no longer contains.
 """
 
 from __future__ import annotations
@@ -26,15 +31,17 @@ def upgrade() -> None:
     # wait turns that from an outage into a failed migration you can retry.
     op.execute("SET lock_timeout = '3s'")
     op.create_table(
-        "items",
+        "users",
         sa.Column(
             "id",
             postgresql.UUID(as_uuid=True),
             server_default=sa.text("gen_random_uuid()"),
             nullable=False,
         ),
-        sa.Column("name", sa.String(length=200), nullable=False),
-        sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("email", sa.String(length=320), nullable=False),
+        # Wide enough for an Argon2id digest with room for a parameter change. See app/models/user.py.
+        sa.Column("hashed_password", sa.String(length=255), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
         ),
@@ -45,9 +52,9 @@ def upgrade() -> None:
     )
     # Unique *index*, matching `unique=True, index=True` on the model. Emitting a separate
     # UniqueConstraint as well would make `alembic check` report permanent drift.
-    op.create_index("ix_items_name", "items", ["name"], unique=True)
+    op.create_index("ix_users_email", "users", ["email"], unique=True)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_items_name", table_name="items")
-    op.drop_table("items")
+    op.drop_index("ix_users_email", table_name="users")
+    op.drop_table("users")

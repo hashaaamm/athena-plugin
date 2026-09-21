@@ -44,7 +44,7 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 | Run the stack | `just dev` |
 | Stop it, remove volumes | `just down` |
 | Full test suite | `just test` |
-| One test | `just test-one tests/test_item_api.py::test_create_and_read_back` |
+| One test | `just test-one tests/test_health.py::test_ready_reports_dependencies` |
 | Lint, types, layer contracts | `just lint` |
 | Everything CI runs | `just check` |
 {%- if cookiecutter.include_frontend == "yes" %}
@@ -55,6 +55,7 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 {%- if cookiecutter.use_postgres == "yes" %}
 | Apply migrations | `just db-migrate` |
 | New migration | `just db-revision "message"` |
+| Check the history has one head | `just db-heads` — no database needed; this is CI's gate |
 | Reset local data | `just db-reset` |
 {%- endif %}
 
@@ -80,6 +81,10 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
   `just infra-up` and `just infra-sync-github`, and the bootstrap script. `just infra-test` and
   `just infra-preview` are the two that change nothing; everything else under `infra/` needs a
   human who has read the preview.
+- Do not run `just infra-destroy` or `just infra-teardown`, ever, and do not suggest removing the
+  guards on them. The teardown script deletes the Pulumi state bucket, which is irreversible and
+  is the only record of what exists; it refuses without a terminal and without the bucket name
+  typed back, and that is the point of it.
 - Do not put a secret value in `infra/`. The stack creates empty containers; a person fills them.
 
 ## Recurring failures

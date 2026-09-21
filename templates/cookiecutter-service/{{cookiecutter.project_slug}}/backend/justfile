@@ -75,25 +75,25 @@ db-revision MESSAGE:
 db-rollback:
     {{compose}} run --rm backend alembic downgrade -1
 
-# Verify a single linear history — two heads means someone's migration silently never ran
+# Compare the models against the local database. Needs the stack up; CI cannot run this one
 db-check:
     {{compose}} run --rm backend alembic check
+
+# Verify a single linear history — two heads means someone's migration silently never ran.
+# Reads the versions directory only, so it needs no database. This is what CI runs.
+db-heads:
+    {{compose}} run --rm backend sh -c 'test "$(alembic heads | wc -l)" -eq 1'
 
 # Resolve multiple heads after a merge
 db-merge-heads:
     {{compose}} run --rm backend alembic merge heads -m "merge_heads"
 
-# Drop and recreate the local database, then migrate and seed
+# Drop and recreate the local database, then migrate
 db-reset:
     {{compose}} down -v db
     {{compose}} up -d db
     @until {{compose}} exec -T db pg_isready >/dev/null 2>&1; do sleep 1; done
     just db-migrate
-    just db-seed
-
-# Load development seed data
-db-seed:
-    {{compose}} run --rm backend python -m app.seed
 {% endraw %}{% endif %}{% raw %}
 # --- Build ---------------------------------------------------------------
 

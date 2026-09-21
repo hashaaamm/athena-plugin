@@ -3,7 +3,6 @@ import {
   Cube,
 {%- if cookiecutter.use_postgres == "yes" %}
   Database,
-  Package,
 {%- endif %}
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -11,9 +10,6 @@ import {
 import { StatCard } from "@/components/stat-card";
 import { Spinner } from "@/components/ui/spinner";
 import { useReadiness } from "@/lib/api/health";
-{%- if cookiecutter.use_postgres == "yes" %}
-import { useItems } from "@/lib/api/items";
-{%- endif %}
 
 /**
  * The first screen. It exists to answer one question on arrival — is the backend there — and to
@@ -21,9 +17,6 @@ import { useItems } from "@/lib/api/items";
  */
 export function DashboardPage() {
   const readiness = useReadiness();
-{%- if cookiecutter.use_postgres == "yes" %}
-  const items = useItems();
-{%- endif %}
 
   const healthy = readiness.data?.status === "ok";
 
@@ -59,13 +52,6 @@ export function DashboardPage() {
           caption="Checked on every readiness probe"
           tone={readiness.data?.database === "ok" ? "success" : "warning"}
           loading={readiness.isPending}
-        />
-        <StatCard
-          label="Items"
-          value={items.data?.count ?? 0}
-          Icon={Package}
-          caption="The example resource"
-          loading={items.isPending}
         />
 {%- endif %}
       </div>

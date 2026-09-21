@@ -4,7 +4,9 @@ The project structure rules MUST that construction happens here and nowhere else
 because this is the single boundary a test can override. A view that builds its own service cannot
 be overridden, and a graph assembled in three files cannot be reasoned about.
 
-Views import only the `...Dep` aliases at the bottom.
+Views import only the `...Dep` aliases at the bottom. A new resource adds a block here — a
+`get_<x>_repository`, a `get_<x>_service` and one `Annotated` alias — and nothing anywhere else
+constructs either of them.
 """
 
 from __future__ import annotations
@@ -19,33 +21,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 {%- if cookiecutter.use_postgres == "yes" %}
 from app.core.database import get_db_session
+from app.core.security.actor import Actor, get_current_actor
 from app.repositories.health_repository import HealthRepository
-from app.repositories.item_repository import ItemRepository
+from app.repositories.user_repository import UserRepository
+{%- endif %}
+{%- if cookiecutter.use_postgres == "yes" %}
+from app.services.auth_service import AuthService
 {%- endif %}
 from app.services.health_service import HealthService
-{%- if cookiecutter.use_postgres == "yes" %}
-from app.services.item_service import ItemService
-{%- endif %}
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 {%- if cookiecutter.use_postgres == "yes" %}
 SessionDep = Annotated[AsyncSession, Depends(get_db_session)]
-
-
-# --- Item ----------------------------------------------------------------
-
-
-def get_item_repository(session: SessionDep) -> ItemRepository:
-    return ItemRepository(session)
-
-
-def get_item_service(
-    repository: Annotated[ItemRepository, Depends(get_item_repository)],
-) -> ItemService:
-    return ItemService(repository)
-
-
-ItemServiceDep = Annotated[ItemService, Depends(get_item_service)]
 {%- endif %}
 
 
@@ -67,3 +54,26 @@ def get_health_service(settings: SettingsDep) -> HealthService:
 {% endif %}
 
 HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
+{%- if cookiecutter.use_postgres == "yes" %}
+
+
+# --- Authentication ------------------------------------------------------
+
+
+def get_user_repository(session: SessionDep) -> UserRepository:
+    return UserRepository(session)
+
+
+def get_auth_service(
+    repository: Annotated[UserRepository, Depends(get_user_repository)],
+) -> AuthService:
+    return AuthService(repository)
+
+
+AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+
+#: The verified caller. `app/api/router.py` already applies `get_current_actor` to every private
+#: route, so this alias is how a route that needs the caller's id *reads* it — FastAPI resolves
+#: the dependency once per request and both uses get the same `Actor`.
+ActorDep = Annotated[Actor, Depends(get_current_actor)]
+{%- endif %}

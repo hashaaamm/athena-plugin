@@ -1,5 +1,8 @@
 import createClient from "openapi-fetch";
 
+{% if cookiecutter.use_postgres == "yes" -%}
+import { enforceSession, getToken } from "@/lib/auth";
+{% endif -%}
 import type { paths } from "./schema";
 
 /**
@@ -15,6 +18,28 @@ export const api = createClient<paths>({
   baseUrl: import.meta.env.VITE_API_URL ?? "http://localhost:8000",
 });
 
+{% if cookiecutter.use_postgres == "yes" -%}
+/**
+ * Authentication, attached once. Both halves are middleware because both halves are properties
+ * of *every* request, and a property enforced at call sites is a property until somebody forgets.
+ *
+ * `onRequest` sends the bearer token when there is one. `onResponse` hands every answer to
+ * `enforceSession`, which is the only code in this application that decides what a 401 means —
+ * see `lib/auth.ts` for the guards that keep it from firing on a failed login or looping on
+ * `/login`. Nothing else, anywhere, handles a 401.
+ */
+api.use({
+  onRequest({ request }) {
+    const token = getToken();
+    if (token !== null) request.headers.set("Authorization", `Bearer ${token}`);
+    return request;
+  },
+  onResponse({ response }) {
+    enforceSession(response);
+    return response;
+  },
+});
+{% else -%}
 // Where a middleware goes when you need one — a bearer token, a correlation id, a 401 redirect:
 //
 //   api.use({
@@ -26,6 +51,7 @@ export const api = createClient<paths>({
 //
 // Register it here, once, rather than at a call site. Ask Athena for the frontend auth rules
 // before you write the token half.
+{% endif %}
 
 /** A failed API call, carrying the backend's stable error code rather than only its prose. */
 export class ApiError extends Error {

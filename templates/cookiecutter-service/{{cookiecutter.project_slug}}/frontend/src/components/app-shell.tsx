@@ -1,21 +1,37 @@
-import { Link, Outlet } from "@tanstack/react-router";
+import {
+  Link,
+  Outlet,
+{%- if cookiecutter.use_postgres == "yes" %}
+  useNavigate,
+{%- endif %}
+} from "@tanstack/react-router";
 import {
   Cube,
 {%- if cookiecutter.use_postgres == "yes" %}
-  Package,
+  SignOut,
 {%- endif %}
   SquaresFour,
+{%- if cookiecutter.use_postgres == "yes" %}
+  UserCircle,
+{%- endif %}
 } from "@phosphor-icons/react";
 
 import { ErrorBoundary } from "@/components/error-boundary";
 import { InShellErrorScreen } from "@/components/status-screens";
-
-const NAV = [
-  { to: "/", label: "Dashboard", Icon: SquaresFour },
 {%- if cookiecutter.use_postgres == "yes" %}
-  { to: "/items", label: "Items", Icon: Package },
+import { useSignOut } from "@/lib/api/auth";
+import { useAccessToken } from "@/lib/use-session";
 {%- endif %}
-] as const;
+
+// A page added to `router.tsx` is added here in the same change, or it is a route only a typed
+// URL reaches.
+const NAV = [{ to: "/", label: "Dashboard", Icon: SquaresFour }] as const;
+{%- if cookiecutter.use_postgres == "yes" %}
+
+// Shown only while a token is held. Not a permission check — the guard in `router.tsx` is — but
+// a link to a page that would bounce you is a link that should not be drawn.
+const PRIVATE_NAV = [{ to: "/account", label: "Account", Icon: UserCircle }] as const;
+{%- endif %}
 
 const NAV_BASE =
   "flex items-center gap-[11px] rounded-[9px] px-[10px] py-[9px] text-[13.5px] font-medium";
@@ -37,6 +53,20 @@ const NAV_ACTIVE = { className: "bg-brand-soft text-ink" };
  * difference between "something broke" and "the app is gone".
  */
 export function AppShell() {
+{%- if cookiecutter.use_postgres == "yes" %}
+  const token = useAccessToken();
+  const signOut = useSignOut();
+  const navigate = useNavigate();
+  const nav = token === null ? NAV : [...NAV, ...PRIVATE_NAV];
+
+  async function onSignOut() {
+    signOut();
+    await navigate({ to: "/login" });
+  }
+{%- else %}
+  const nav = NAV;
+{%- endif %}
+
   function pageFallback(error: Error, reset: () => void) {
     return <InShellErrorScreen error={error} reset={reset} />;
   }
@@ -57,7 +87,7 @@ export function AppShell() {
           <div className="px-[10px] pb-[5px] pt-[10px] text-[10.5px] font-semibold uppercase tracking-[0.05em] text-faint">
             Workspace
           </div>
-          {NAV.map(({ to, label, Icon }) => (
+          {nav.map(({ to, label, Icon }) => (
             // TanStack Router concatenates `className` with the active/inactive className, so
             // shared classes go here and only the state-specific ones go in the props below.
             // Repeating a colour in both is how you get two of them in the class list.
@@ -76,6 +106,24 @@ export function AppShell() {
         </nav>
 
         <div className="mt-auto px-[18px] pb-4 text-[11px] leading-relaxed text-faint">
+{%- if cookiecutter.use_postgres == "yes" %}
+          <div className="pb-3">
+            {token === null ? (
+              <Link to="/login" className="text-[12px] font-medium text-brand hover:underline">
+                Sign in
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="flex items-center gap-2 text-[12px] font-medium text-nav hover:text-ink"
+              >
+                <SignOut size={14} />
+                Sign out
+              </button>
+            )}
+          </div>
+{%- endif %}
           <div className="border-t border-hairline pt-3">
             API
             <span className="ml-1 font-mono text-mute">

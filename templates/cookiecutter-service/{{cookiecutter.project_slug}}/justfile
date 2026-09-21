@@ -103,21 +103,20 @@ db-revision MESSAGE: _env
 db-rollback: _env
     {{backend}} db-rollback
 
-# Verify a single linear migration history
+# Compare the models against the local database
 db-check: _env
     {{backend}} db-check
 
-# Drop and recreate the local database, then migrate and seed
+# Verify a single linear migration history. No database needed — this is the one CI runs
+db-heads: _env
+    {{backend}} db-heads
+
+# Drop and recreate the local database, then migrate
 db-reset: _env
     {{compose}} down -v db
     {{compose}} up -d db
     @until {{compose}} exec -T db pg_isready >/dev/null 2>&1; do sleep 1; done
     just db-migrate
-    just db-seed
-
-# Load development seed data
-db-seed: _env
-    {{backend}} db-seed
 {% endraw %}{% endif %}{% raw %}
 # --- Build ---------------------------------------------------------------
 
@@ -146,14 +145,33 @@ infra-lint:
 # nothing to preserve, and the next apply rolls the service back to it.
 
 # Show what `pulumi up` would change
-infra-preview STACK="dev":
-    cd infra/pulumi && uv run pulumi preview --stack {{STACK}} --refresh --diff
+infra-preview STACK="dev" *FLAGS:
+    cd infra/pulumi && uv run pulumi preview --stack {{STACK}} --refresh --diff {{FLAGS}}
 
-# Apply the stack. Creates real, billable resources — read the preview first.
-infra-up STACK="dev":
-    cd infra/pulumi && uv run pulumi up --stack {{STACK}} --refresh
+# `pulumi up` asks for confirmation and refuses to run at all when nothing can answer:
+# "--yes must be passed in to proceed when running in non-interactive mode". That is the right
+# behaviour for the one command here that creates billable resources, so this recipe does not pass
+# --yes for you; it passes your flags through instead, and a pipeline or an agent types the word.
+# The stack name is positional, so the flag has to come after one.
+#
+# Creates real, billable resources — read the preview first. Unattended: `just infra-up dev --yes`
+infra-up STACK="dev" *FLAGS:
+    cd infra/pulumi && uv run pulumi up --stack {{STACK}} --refresh {{FLAGS}}
 
 # Copy stack outputs into GitHub repository variables, which un-gates cd.yml
 infra-sync-github STACK="dev":
     ./infra/scripts/sync-github.sh {{STACK}}
+
+# Destroying is two commands, not one, and they are not interchangeable. `pulumi destroy` removes
+# what the stack created. It cannot remove the bucket its own state lives in or the KMS key that
+# encrypts that state, because the stack never created them — the bootstrap script did. Run them
+# in this order; the teardown script enforces it rather than trusting you to remember.
+
+# Destroy everything the stack created. Prompts, for the same reason `infra-up` does.
+infra-destroy STACK="dev" *FLAGS:
+    cd infra/pulumi && uv run pulumi destroy --stack {{STACK}} --refresh {{FLAGS}}
+
+# Delete the state bucket and KMS key, which `destroy` cannot. Refuses unless every stack is empty
+infra-teardown:
+    ./infra/bootstrap/teardown.sh
 {% endraw %}

@@ -27,4 +27,9 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen
 COPY app/ ./app/
 
 EXPOSE 8000
+# Inline, unlike the production image's `docker/start.sh`. There is nothing here for a script to
+# protect: exec form already makes uvicorn PID 1, the port is fixed and matches the EXPOSE above
+# and compose's mapping, and the line is the canonical uvicorn invocation rather than something a
+# reader has to reconstruct. Compose replaces this command outright for `dev-runner` and for the
+# CI test runner, so a script would be an indirection with one caller.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

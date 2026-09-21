@@ -23,6 +23,19 @@ Environment = Literal["local", "test", "staging", "production"]
 # A sentinel, not a credential. The validator below refuses to start with it outside local and
 # test — a placeholder password in production is worse than a missing one, because it starts.
 PLACEHOLDER_SECRET = "local-only-not-a-secret"  # noqa: S105
+
+#: HS256 signs with the configured secret directly, so the secret *is* the key. RFC 7518 §3.2 puts
+#: the floor at the hash's own output size — 32 bytes for SHA-256 — and PyJWT warns below it; a
+#: shorter key is brute-forceable offline from one captured token, and captured tokens are the
+#: normal case. Generate the deployed value with `openssl rand -base64 48`, or let the Pulumi
+#: stack do it, which is what it does.
+MIN_JWT_SECRET_LENGTH = 32
+
+#: The signing equivalent of PLACEHOLDER_SECRET, and long enough to clear that floor on purpose:
+#: a shorter sentinel would make PyJWT warn on every token a developer mints, which under this
+#: project's `filterwarnings = ["error"]` is a red test suite on a fresh clone. It is still a
+#: sentinel and `require_signing_key` still refuses to serve with it anywhere deployed.
+PLACEHOLDER_JWT_SECRET = "local-only-not-a-real-signing-key"  # noqa: S105
 {% endif %}
 
 class Settings(BaseSettings):
@@ -58,6 +71,20 @@ class Settings(BaseSettings):
     postgres_db: str = "{{ cookiecutter.project_slug.replace('-', '_') }}"
     #: Cloud SQL's Unix socket, or a full DSN in tests. Set this and the parts above are ignored.
     database_url_override: str = ""
+
+    # --- Authentication --------------------------------------------------
+    #: The HS256 signing key for access tokens. There is no usable default: `require_signing_key`
+    #: in `app/core/security/tokens.py` refuses the sentinel, and anything too short, everywhere
+    #: except local and test. A template that shipped a working default here would ship every
+    #: service generated from it the same forgeable key.
+    jwt_secret: SecretStr = SecretStr(PLACEHOLDER_JWT_SECRET)
+    #: `iss` and `aud`, verified on every decode. They are what stops a token minted by staging,
+    #: or by another service that happens to share the key, from being accepted here.
+    jwt_issuer: str = "{{ cookiecutter.project_slug }}"
+    jwt_audience: str = "{{ cookiecutter.project_slug }}"
+    #: Fifteen minutes. Nothing checks an access token against the database, so this number is
+    #: also the revocation latency: a deactivated account keeps working until its token expires.
+    access_token_ttl_seconds: int = 900
 {% endif %}{% if cookiecutter.use_sentry == "yes" %}
     # --- Observability ---------------------------------------------------
     #: Empty means no error tracking. That MUST be the local default —
@@ -102,6 +129,11 @@ class Settings(BaseSettings):
         placeholder = self.postgres_password.get_secret_value() == PLACEHOLDER_SECRET
         if placeholder and not self.database_url_override:
             raise ValueError("POSTGRES_PASSWORD must be set outside local and test")
+        # `jwt_secret` is deliberately *not* checked here, and that is this docstring's rule
+        # applied rather than an oversight: the migration job is granted no signing key because it
+        # signs nothing, and a check in this validator would stop it booting. It is enforced in
+        # `require_signing_key`, which `create_app` calls — so a deployed *server* still refuses to
+        # start with the sentinel, which is the failure that matters.
         return self
 {% endif %}
 

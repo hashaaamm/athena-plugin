@@ -79,28 +79,38 @@ rules, file lists and output, and the agent writing that unit is the one paying 
 it. The plan/brief split exists to stop exactly that, and `athena_brief` returns a ready-made
 `spawn_prompt` precisely so you never have to read the work you are handing off.
 
+**The trigger is the unit count, not the size of the job.** `athena_flow` came back with more than
+one unit: fan out. Anything else — a guide, a context response, a `mode="map"` list, or a flow that
+pruned down to a single unit — you do yourself. A two-step guide split across two sub-agents is
+ceremony; a fourteen-unit deploy run in one context is the mess this section exists to prevent.
+
 So, mechanically:
 
 1. **Walk `fan_out.groups` in order.** Each has a 1-based `group`. Never start one early — a later
    group depends on something an earlier one produces.
 2. **Inside a group, look at `run_concurrently`.** When it is true, spawn *every* step in that group
    at once, in a single message with one sub-agent call per step. Spawning them one after another
-   and waiting for each is a serial run wearing a parallel directive.
+   and waiting for each is a serial run wearing a parallel directive. `mode` is the overall
+   shape — `sequential` means every group is one step, and still one sub-agent per step.
 3. **One sub-agent per step in `steps`.** Give it `brief_call` and have it call `athena_brief`
    itself, in its own context, and use the returned `spawn_prompt` as its system prompt. Pass that
    through without reading it.
 4. **Pass `must_not_edit` to each sub-agent** as files it may not touch. That list is how two agents
    in one group stay out of each other's way.
-5. **Wait for the whole group, then check `after_each_group`** before starting the next one.
-6. **On a failure, do what `on_failure` says** — which includes reporting it with `athena_feedback`.
+5. **Stop before an `external` unit.** A unit with `external: true` in `units` has effects outside
+   the repository and spends money — a project, a bucket, a live service. Confirm with the person
+   before you spawn it, every time. Read the flag off each unit: the directive says the condition
+   is present, not which steps or how many.
+6. **Wait for the whole group, then check `after_each_group`** before starting the next one. Each
+   sub-agent reports the files it changed and whether its `verify` checks passed; that result is
+   what you gate on, and it is all you take back.
+7. **On a failure, do what `on_failure` says** — which includes reporting it with `athena_feedback`,
+   for each unit whose verification failed.
 
-Your own context stays thin on purpose: the directive, each sub-agent's summary, and nothing else.
-Do not fetch briefs for units you are not about to run, and do not read a unit's brief in order to
-"check" a sub-agent — you are reassembling in your context the thing you just split.
-
-`mode` tells you which shape the flow is overall: `parallel` when some groups fan out, `sequential`
-when every group is one step. `sequential` still means one sub-agent per step. It does not mean do
-it yourself.
+Your own context stays thin on purpose: the plan, the ordering, the checkpoints and each sub-agent's
+summary — never a unit's contents. Do not fetch briefs for units you are not about to run, and do not
+read a unit's brief in order to "check" a sub-agent — you are reassembling in your context the thing
+you just split.
 
 ## The request is the scope
 

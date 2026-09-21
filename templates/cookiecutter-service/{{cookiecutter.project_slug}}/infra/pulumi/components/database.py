@@ -1,7 +1,10 @@
 """Cloud SQL for PostgreSQL.
 
 The cost decision: a shared-core instance with 10 GB of HDD is the floor for managed Postgres on
-GCP, and it is the only standing charge in this stack. Everything else scales to zero.
+GCP, and it is the only standing charge in this stack. Everything else scales to zero. Every
+setting below that has a cheaper-looking alternative is already at its minimum; `infra/README.md`
+has the table of what each one is and what the floor costs you — shared-core and single-zone are
+both outside the Cloud SQL SLA, which is the price of it.
 
 The security decision worth understanding: the instance keeps a public IP with **zero authorised
 networks**. That reads as a mistake and is not. Cloud Run reaches it through the Cloud SQL

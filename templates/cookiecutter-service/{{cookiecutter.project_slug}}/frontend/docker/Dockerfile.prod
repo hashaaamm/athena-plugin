@@ -32,3 +32,8 @@ ENV PORT=8080
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
     CMD wget -qO- "http://127.0.0.1:${PORT}/" >/dev/null || exit 1
+
+# No CMD and no ENTRYPOINT on purpose, and no start script either — unlike the backend, whose
+# command lives in backend/docker/start.sh. The base image already has both: its entrypoint runs
+# the envsubst pass over /etc/nginx/templates above and then execs nginx in the foreground.
+# Replacing either would skip that pass, and $PORT would never reach the listen directive.

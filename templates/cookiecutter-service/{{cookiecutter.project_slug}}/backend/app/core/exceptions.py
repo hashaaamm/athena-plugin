@@ -8,6 +8,7 @@ Ask Athena for the FastAPI standards and for how errors and logging are handled.
 from __future__ import annotations
 
 import uuid
+from typing import ClassVar
 
 {% if cookiecutter.use_sentry == "yes" -%}
 import sentry_sdk
@@ -31,6 +32,9 @@ class AppError(Exception):
     status_code: int = status.HTTP_400_BAD_REQUEST
     code: str = "bad_request"
     default_message: str = "Application error"
+    #: Response headers this error requires. Exactly one error needs them today and it is a
+    #: protocol requirement, not a nicety — see `UnauthorizedError`.
+    headers: ClassVar[dict[str, str] | None] = None
 
     def __init__(self, message: str | None = None) -> None:
         self.message = message or self.default_message
@@ -63,6 +67,10 @@ class UnauthorizedError(AppError):
     status_code = status.HTTP_401_UNAUTHORIZED
     code = "unauthorized"
     default_message = "Not authenticated"
+    # A 401 without `WWW-Authenticate` is a protocol violation, and the practical symptom is an
+    # HTTP client that will not attempt re-authentication because nothing told it which scheme to
+    # use. RFC 9110 requires the header on every 401.
+    headers: ClassVar[dict[str, str] | None] = {"WWW-Authenticate": "Bearer"}
 
 
 class ForbiddenError(AppError):
@@ -82,7 +90,11 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _handle_app_error(_request: Request, exc: AppError) -> JSONResponse:
         # Deliberate errors are control flow, not defects: logged at warning, never reported.
         logger.warning("app_error", code=exc.code, message=exc.message)
-        return JSONResponse(status_code=exc.status_code, content=_body(exc.code, exc.message))
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_body(exc.code, exc.message),
+            headers=exc.headers,
+        )
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(_request: Request, exc: Exception) -> JSONResponse:
