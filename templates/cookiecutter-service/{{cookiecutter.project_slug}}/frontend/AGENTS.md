@@ -71,16 +71,26 @@ appear for the same status.
 A **403 is not a 401** and must never be treated as one. `POST /auth/change-password` answers 403
 for a wrong current password precisely so the session survives and the form shows the error.
 
-### Route protection is a pathless layout route
+### The whole shell is behind the guard
 
-`authenticatedRoute` in `src/router.tsx` holds the `beforeLoad` guard; anything that reads a user
-goes under it. The dashboard deliberately does not: it reads the public `/health/ready` and it is
-the screen that tells you the backend is unreachable, which is exactly when sign-in cannot work.
+`appRoute` in `src/router.tsx` — the pathless layout route that renders the sidebar — holds the
+`beforeLoad` check. Every page inside the application is under it, `/` included, so a visitor with
+no token never reaches a screen and never fires a query. `/login` and `/register` hang off the
+root instead, outside the shell: a sidebar of links to pages you cannot open is worse than no
+sidebar. Both bounce a caller who already holds a token, and signing in lands on `/`.
 
-An unauthenticated visitor lands on `/login`. There is no `next` parameter — with one guarded
-route it buys nothing, and a `next` read from the URL and navigated to is an open redirect unless
-it is validated against the route tree. Add it, validated, when a second page goes behind the
-guard.
+A new page goes under `appRoute` and inherits the guard. A page that must be reachable signed out
+is a route on `rootRoute` with its own chrome, and it is a decision worth writing down.
+
+There is no `next` parameter — a `next` read from the URL and navigated to is an open redirect
+unless it is validated against the route tree. Add it, validated, when there are enough guarded
+routes for a redirect-back to be worth having.
+
+**The guard is a UX boundary, not a security one.** The built bundle is static files, served to
+anyone who asks for them; `beforeLoad` decides what renders, not what is downloadable. Every route
+path, component and API shape in this application is readable by anyone who fetches the JavaScript.
+What keeps data private is the backend answering 401 without a valid bearer token — never add a
+field to a response on the basis that only a signed-in page displays it.
 
 ### Errors are the server's words, with one exception
 
@@ -99,7 +109,11 @@ has none of them. Each one is a backend change first.
 
 | Change | Files |
 | --- | --- |
+{%- if cookiecutter.use_postgres == "yes" %}
+| New page | `src/routes/<page>.tsx` + a route under `appRoute` in `src/router.tsx` (+ a nav entry in `app-shell.tsx`) |
+{%- else %}
 | New page | `src/routes/<page>.tsx` + a route in `src/router.tsx` (+ a nav entry in `app-shell.tsx`) |
+{%- endif %}
 | New resource | `src/lib/api/<resource>.ts`: fetchers first, then the hooks over them, keys in one object |
 | New shared component | `src/components/` — `src/components/ui/` is shadcn's, added with its CLI |
 | Backend API changed | `just gen-api`, then fix what stops compiling |

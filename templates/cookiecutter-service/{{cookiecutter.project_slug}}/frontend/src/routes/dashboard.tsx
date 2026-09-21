@@ -10,6 +10,7 @@ import {
 import { StatCard } from "@/components/stat-card";
 import { Spinner } from "@/components/ui/spinner";
 import { useReadiness } from "@/lib/api/health";
+import { formatBuildVersion } from "@/lib/format";
 
 /**
  * The first screen. It exists to answer one question on arrival — is the backend there — and to
@@ -19,6 +20,7 @@ export function DashboardPage() {
   const readiness = useReadiness();
 
   const healthy = readiness.data?.status === "ok";
+  const version = readiness.data?.version;
 
   return (
     <div className="mx-auto max-w-[1080px] px-10 pb-[60px] pt-8">
@@ -28,7 +30,13 @@ export function DashboardPage() {
         feature worth keeping.
       </p>
 
-      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {/* One column, then the full row at `md`. A two-then-three breakpoint ladder leaves the
+          last card alone on its own row for most of the viewport range. */}
+{%- if cookiecutter.use_postgres == "yes" %}
+      <div className="mt-7 grid grid-cols-1 gap-4 md:grid-cols-3">
+{%- else %}
+      <div className="mt-7 grid grid-cols-1 gap-4 md:grid-cols-2">
+{%- endif %}
         <StatCard
           label="Backend"
           value={readiness.isError ? "Unreachable" : healthy ? "Ready" : "Degraded"}
@@ -37,9 +45,12 @@ export function DashboardPage() {
           tone={healthy ? "success" : "warning"}
           loading={readiness.isPending}
         />
+        {/* The deployed value is a full commit SHA. Shortened here and kept in full in the
+            title, because forty monospace characters do not fit in a stat card. */}
         <StatCard
           label="Version"
-          value={readiness.data?.version ?? "—"}
+          value={formatBuildVersion(version)}
+          valueTitle={version}
           Icon={Cube}
           caption="The build answering right now"
           loading={readiness.isPending}

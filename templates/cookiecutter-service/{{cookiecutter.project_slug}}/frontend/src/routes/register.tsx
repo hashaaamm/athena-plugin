@@ -67,7 +67,7 @@ export function RegisterPage() {
     }
     try {
       await signIn.mutateAsync(values);
-      await navigate({ to: "/account" });
+      await navigate({ to: "/" });
     } catch {
       // The account exists; only the second leg failed. Saying so is the difference between a
       // user who signs in and one who registers again and hits "already exists".

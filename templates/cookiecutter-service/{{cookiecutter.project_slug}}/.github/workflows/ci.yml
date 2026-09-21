@@ -17,12 +17,16 @@ on:
       - 'backend/**'
       - 'docker-compose*.yml'
       - '.github/workflows/ci.yml'
+      # The secret scan runs here, so a change to what it allowlists has to re-run it.
+      - '.gitleaks.toml'
   push:
     branches: [main]
     paths:
       - 'backend/**'
       - 'docker-compose*.yml'
       - '.github/workflows/ci.yml'
+      # The secret scan runs here, so a change to what it allowlists has to re-run it.
+      - '.gitleaks.toml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

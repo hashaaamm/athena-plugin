@@ -2,6 +2,7 @@
 .git
 .gitignore
 node_modules
+.pnpm-store
 dist
 .vite
 coverage

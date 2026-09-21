@@ -1,4 +1,17 @@
 /**
+ * Shorten a build identifier for display.
+ *
+ * `/health/ready` reports whatever the image was tagged with, which in a deployed service is a
+ * forty-character commit SHA. Seven characters is the length everything else — git, GitHub, the
+ * registry — abbreviates one to. Anything already short, such as `dev`, is left alone. The full
+ * value belongs in a `title`, not in the layout.
+ */
+export function formatBuildVersion(version: string | undefined): string {
+  if (!version) return "—";
+  return version.length > 7 ? version.slice(0, 7) : version;
+}
+
+/**
  * Format an ISO timestamp as a short relative-day label: "Today", "Yesterday", "N days ago",
  * "Last week", or a short date like "24 Jun".
  *

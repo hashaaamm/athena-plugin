@@ -96,7 +96,10 @@ def main() -> None:
         # and it fails in a browser. The shared files — router, shell, API client, README and
         # AGENTS.md — branch in Jinja instead, because they exist either way. Harmless when
         # `include_frontend` is "no": frontend/ has already gone and `_remove` skips what is
-        # not there.
+        # not there. The dashboard's route test goes with them: it asserts the guard and mounts
+        # the real tree through `test-router.tsx`, and neither exists here. What that page still
+        # owns without a database — the shortened build identifier — is covered by the unit test
+        # in `lib/format.test.ts`, which every variant keeps.
         _remove(
             "frontend/src/components/auth-card.tsx",
             "frontend/src/lib/api/auth.ts",
@@ -106,6 +109,7 @@ def main() -> None:
             "frontend/src/lib/use-session.ts",
             "frontend/src/routes/account.tsx",
             "frontend/src/routes/account.test.tsx",
+            "frontend/src/routes/dashboard.test.tsx",
             "frontend/src/routes/login.tsx",
             "frontend/src/routes/login.test.tsx",
             "frontend/src/routes/register.tsx",

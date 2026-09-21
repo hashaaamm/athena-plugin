@@ -36,8 +36,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Reads the pinned version from package.json's `packageManager` field, so CI and the
-      # container in docker-compose resolve dependencies identically.
+      # container in docker-compose resolve dependencies identically. `package_json_file`
+      # is not optional in this layout: the action looks in the repository root, where
+      # this monorepo has no package.json, and fails before any job runs. `defaults.run`
+      # does not reach it, because it is an action rather than a `run` step.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -54,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -69,6 +76,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -85,6 +94,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24

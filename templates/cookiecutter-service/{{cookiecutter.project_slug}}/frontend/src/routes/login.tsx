@@ -59,7 +59,7 @@ export function LoginPage() {
     setFailure(null);
     try {
       await signIn.mutateAsync(values);
-      await navigate({ to: "/account" });
+      await navigate({ to: "/" });
     } catch (err) {
       setFailure(describe(err));
     }

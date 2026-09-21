@@ -49,7 +49,7 @@ describe("registering", () => {
 
     await fillIn();
 
-    expect(await screen.findByRole("heading", { name: "Account" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(getToken()).toBe(TOKEN.access_token);
   });
 

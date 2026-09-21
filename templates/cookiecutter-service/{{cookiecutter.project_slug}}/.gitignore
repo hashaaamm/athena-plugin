@@ -13,6 +13,11 @@ htmlcov/
 node_modules/
 dist/
 .vite/
+# pnpm's content-addressable store. It normally lives under $HOME, but pnpm puts it beside the
+# project whenever the two are on different drives — which is every `just dev`, because the
+# frontend container installs into a bind mount. Tens of thousands of package files then land in
+# `git add .`, and gitleaks reports a minified dependency as a leak on the first push.
+.pnpm-store/
 
 # Local environment. `.env.example` is tracked; `.env` never is.
 # Ask Athena for the secrets-management rules.

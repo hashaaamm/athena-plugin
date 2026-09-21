@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { formatRelativeDay } from "./format";
+import { formatBuildVersion, formatRelativeDay } from "./format";
 
 // A fixed "now" — the whole reason formatRelativeDay takes one. Local time, deliberately: the
 // function compares calendar days in the reader's timezone, so a "Z" here would make the suite
 // pass in UTC and fail an hour either side of midnight for everyone else.
 const NOW = new Date("2024-06-24T12:00:00");
+
+describe("formatBuildVersion", () => {
+  it("abbreviates a commit SHA and leaves a short identifier alone", () => {
+    expect(formatBuildVersion("444e2e3be7532f379b84f7d892ce0a7c8995298")).toBe("444e2e3");
+    expect(formatBuildVersion("dev")).toBe("dev");
+    expect(formatBuildVersion(undefined)).toBe("—");
+  });
+});
 
 describe("formatRelativeDay", () => {
   it("labels today and yesterday by name", () => {

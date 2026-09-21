@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe("signing in", () => {
-  it("stores the token and lands on the account page", async () => {
+  it("stores the token and lands on the dashboard", async () => {
     loginReturns(200, TOKEN);
     vi.spyOn(api, "GET").mockResolvedValue({
       data: USER,
@@ -51,7 +51,7 @@ describe("signing in", () => {
 
     await signIn();
 
-    expect(await screen.findByRole("heading", { name: "Account" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(getToken()).toBe(TOKEN.access_token);
   });
 

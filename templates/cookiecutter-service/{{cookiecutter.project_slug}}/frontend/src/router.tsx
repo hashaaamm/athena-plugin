@@ -30,11 +30,38 @@ import { getToken, LOGIN_PATH } from "@/lib/auth";
 /** Bare root: each group below provides its own chrome, or none. */
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
 
+{%- if cookiecutter.use_postgres == "yes" %}
+
+/**
+ * Pathless layout route. Everything under it renders inside the sidebar, and every page under it
+ * needs a token — the shell is the guard, so there is no page inside the application a signed-out
+ * visitor can reach.
+ *
+ * `beforeLoad` runs before the component mounts, so an unauthenticated visitor never renders a
+ * flash of a page they are not allowed to see, and the queries on that page never fire.
+ *
+ * This is a UX boundary and not a security one. The bundle is static files served to anyone who
+ * asks; what keeps data private is the backend answering 401 without a valid bearer token. Ask
+ * Athena for `standard/browser-authentication` before you reason about either.
+ *
+ * There is no `next` parameter, and that is deliberate rather than unfinished. A `next` taken
+ * from the URL and navigated to is an open redirect unless it is validated against the route
+ * tree. Add it — validated — when there are enough guarded routes for a redirect-back to be
+ * worth having.
+ */
+{%- else %}
+
 /** Pathless layout route. Everything under it renders inside the sidebar. */
+{%- endif %}
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "app",
   component: AppShell,
+{%- if cookiecutter.use_postgres == "yes" %}
+  beforeLoad: () => {
+    if (getToken() === null) throw redirect({ to: LOGIN_PATH });
+  },
+{%- endif %}
 });
 
 const dashboardRoute = createRoute({
@@ -44,33 +71,8 @@ const dashboardRoute = createRoute({
 });
 {%- if cookiecutter.use_postgres == "yes" %}
 
-/**
- * The guard, in one place for every page that needs it.
- *
- * A second pathless layout route rather than a check on `appRoute`, and the split is the
- * decision: the dashboard reads `/health/ready`, which is public, and it is the screen that says
- * whether the backend is reachable at all. Putting it behind sign-in means the one page that
- * could tell you the API is down is unreachable exactly when the API is down. Everything that
- * reads a user goes under here; everything that does not, does not.
- *
- * `beforeLoad` runs before the component mounts, so an unauthenticated visitor never renders a
- * flash of a page they are not allowed to see.
- *
- * There is no `next` parameter, and that is deliberate rather than unfinished. One guarded route
- * makes a redirect-back worth nothing, and a `next` taken from the URL and navigated to is an
- * open redirect unless it is validated against the route tree. Add it — validated — when there
- * is a second page behind this guard.
- */
-const authenticatedRoute = createRoute({
-  getParentRoute: () => appRoute,
-  id: "authenticated",
-  beforeLoad: () => {
-    if (getToken() === null) throw redirect({ to: LOGIN_PATH });
-  },
-});
-
 const accountRoute = createRoute({
-  getParentRoute: () => authenticatedRoute,
+  getParentRoute: () => appRoute,
   path: "/account",
   component: AccountPage,
 });
@@ -84,7 +86,7 @@ const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: LOGIN_PATH,
   beforeLoad: () => {
-    if (getToken() !== null) throw redirect({ to: "/account" });
+    if (getToken() !== null) throw redirect({ to: "/" });
   },
   component: LoginPage,
 });
@@ -93,7 +95,7 @@ const registerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/register",
   beforeLoad: () => {
-    if (getToken() !== null) throw redirect({ to: "/account" });
+    if (getToken() !== null) throw redirect({ to: "/" });
   },
   component: RegisterPage,
 });
@@ -103,7 +105,7 @@ const routeTree = rootRoute.addChildren([
 {%- if cookiecutter.use_postgres == "yes" %}
   loginRoute,
   registerRoute,
-  appRoute.addChildren([dashboardRoute, authenticatedRoute.addChildren([accountRoute])]),
+  appRoute.addChildren([dashboardRoute, accountRoute]),
 {%- else %}
   appRoute.addChildren([dashboardRoute]),
 {%- endif %}

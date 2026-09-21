@@ -10,11 +10,12 @@ is.
 {%- if cookiecutter.use_postgres == "yes" %}
 
 It also ships the signed-in half of the backend's four auth endpoints: `/register`, `/login`, and
-an `/account` page that reads `GET /auth/me` and changes a password. Three decisions came with
-it, and every one of them has a cost somebody has to know about — where the token lives, what a
-401 does, and which routes are behind the guard. They are written up, with the trade-off
-accepted, in the **Authentication** section of [AGENTS.md](AGENTS.md). Read that before you touch
-`src/lib/auth.ts`.
+an `/account` page that reads `GET /auth/me` and changes a password. **The application shell is
+behind the guard, `/` included** — the only pages reachable without a token are sign-in and
+registration. Three decisions came with it, and every one of them has a cost somebody has to know
+about — where the token lives, what a 401 does, and what that guard does and does not protect.
+They are written up, with the trade-off accepted, in the **Authentication** section of
+[AGENTS.md](AGENTS.md). Read that before you touch `src/lib/auth.ts`.
 {%- endif %}
 
 ## Run it
