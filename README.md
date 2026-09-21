@@ -3,22 +3,14 @@
 Rules, guides, flows and knowledge for the code you are about to write, retrieved before you plan
 or write it.
 
-This repository is how Athena is installed, in **Claude Code** and in **Cursor**. The repository
-root is the plugin in both formats, which is what lets one `skills/` tree serve both clients rather
-than two copies of the same file disagreeing over time.
-
-The handbook itself is not here. It is served through the MCP server, against the question you
-actually asked.
+This repository is how Athena is installed, in **Claude Code** and in **Cursor**. The handbook
+itself is not here — it is served through the MCP server, against the question you actually asked.
 
 ## Not in a marketplace yet
 
 **Athena is not listed in the Cursor Marketplace, and there is no public Claude Code marketplace
 entry.** Installing means pointing your client at this repository directly. Both paths below work
 today; neither needs a listing.
-
-A marketplace submission is coming. Until it lands, an install stays pinned to the commit you
-imported — the handbook itself does not, because standards and content live on the server and
-change without anybody reinstalling anything.
 
 ## Install
 
@@ -59,39 +51,15 @@ echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 4. When Cursor prompts, paste your personal `ath_...` token. Leave the MCP URL on the default
    unless you self-host.
 
-The plugin is called `athena` to Claude Code and `engineering-athena` to Cursor. Deliberate:
-`/plugin install athena@engineering-athena` reads better than the alternative, and a listing wants
-a name nobody else will claim.
-
 ### Either way
 
 Restart the client. `/mcp` in Claude Code, or Settings → MCP in Cursor, should list `athena`, and
 the agent should reach for it the next time you ask for a feature.
 
-Both clients load the **same** `skills/athena/SKILL.md`. Not a port of it and not generated from
-it — one file, so neither client can be given advice the other was not.
-
 ## Getting a token
 
 Every caller authenticates; there is no anonymous access. Ask whoever runs your Athena instance for
-a token. It is issued per person, which is what lets the service tell callers apart and what makes a
-reference issued to you resolve only for you.
-
-## What you get
-
-Four categories, and the difference is what you do with each:
-
-| Category | You | Binding |
-| --- | --- | --- |
-| **Rules** | adhere — deviating needs a reason | yes, graded MUST / SHOULD / MAY |
-| **Guides** | follow, to build one specific thing | no, but the rules they cite are |
-| **Flows** | orchestrate, one sub-agent per step | only through what they compose |
-| **Knowledge** | hold in mind while doing something else | no |
-
-The tool an agent reaches for first is `athena_context`: it takes a task and the requirements read
-out of it, and answers all four categories in one call with every rule and guide labelled by the
-requirement it answers. `plan=True` returns the work as ordered steps graded must / should / may /
-optional, each with the verification its guide gave for it.
+a token. It is issued per person.
 
 ## Pointing at your own instance
 
@@ -108,8 +76,3 @@ Defaults to `https://mcp.engineeringathena.com/mcp`.
 
 MIT, in [LICENSE](LICENSE). What the plugin and the hosted MCP do with what an agent sends is in
 [PRIVACY.md](PRIVACY.md).
-
-**This repository is a distribution channel, not a content channel.** What is here is what cannot be
-delivered any other way — a plugin has to be fetched from a URL. The handbook's rules, guides, flows
-and knowledge are delivered through the MCP server, where they can be retrieved against the question
-you actually asked; publishing them as files would be a worse product and a bigger one.
