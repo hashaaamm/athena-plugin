@@ -3,45 +3,49 @@
 Rules, guides, flows and knowledge for the code you are about to write, retrieved before you plan
 or write it.
 
-This repository is how Athena is installed, in **Claude Code** and in **Cursor**. It holds three
-things:
-
-- a **plugin** for both clients, carrying the MCP server and the skill together;
-- a **cookiecutter template** for a FastAPI service built to the handbook's standards.
-
-The repository root is the plugin in both formats, which is what lets one `skills/` tree serve
-both clients rather than two copies of the same file disagreeing over time.
-
-The plugin is called `athena` to Claude Code and `engineering-athena` to Cursor. Deliberate:
-`/plugin install athena@engineering-athena` reads better than the alternative, and a marketplace
-listing wants a name nobody else will claim.
+This repository is how Athena is installed, in **Claude Code** and in **Cursor**. The repository
+root is the plugin in both formats, which is what lets one `skills/` tree serve both clients rather
+than two copies of the same file disagreeing over time.
 
 The handbook itself is not here. It is served through the MCP server, against the question you
 actually asked.
 
-The **Cursor Marketplace plugin** is the manifests, `mcp.json`, `skills/`, and `assets/`.
-`templates/` is a separate cookiecutter product in the same repository; Cursor does not load it.
-License is MIT. How the hosted MCP handles what an agent sends is in [PRIVACY.md](PRIVACY.md).
+## Not in a marketplace yet
+
+**Athena is not listed in the Cursor Marketplace, and there is no public Claude Code marketplace
+entry.** Installing means pointing your client at this repository directly. Both paths below work
+today; neither needs a listing.
+
+A marketplace submission is coming. Until it lands, an install stays pinned to the commit you
+imported — the handbook itself does not, because standards and content live on the server and
+change without anybody reinstalling anything.
 
 ## Install
 
-Athena is two things in every client: an **MCP server** that answers questions, and a **file of
-guidance** that makes the agent ask. Install one without the other and you have half a product — a
-server nobody calls, or a paragraph of advice with nothing behind it.
+Athena is two things in every client: an **MCP server** that answers questions, and a **skill** that
+makes the agent ask. Install one without the other and you have half a product — a server nobody
+calls, or a paragraph of advice with nothing behind it.
 
-Both clients are first-class. Pick yours.
+The quickest route is to hand this to your coding agent:
+
+> Install Engineering Athena from `https://github.com/hashaaamm/athena-plugin`. It is not in a
+> marketplace, so add the repository directly. Install **both** halves — the MCP server from the
+> plugin manifest, and `skills/athena/SKILL.md`. The server needs `ATHENA_TOKEN` set to the
+> personal token I will give you; it is never written into a repository. Then confirm the `athena`
+> MCP server is connected and the skill is loaded.
+
+Then give it your `ath_...` token. If you would rather do it by hand:
 
 ### Claude Code
-
-The plugin carries both halves, so this is two commands:
 
 ```bash
 /plugin marketplace add hashaaamm/athena-plugin
 /plugin install athena@engineering-athena
 ```
 
-Then put the token where the plugin can reach it — it declares `Bearer ${ATHENA_TOKEN}` and never
-holds the value itself, because this repository is public and your token is not:
+That adds *this repository* as a marketplace source — it is not the public marketplace. Then put
+the token where the plugin can reach it. It declares `Bearer ${ATHENA_TOKEN}` and never holds the
+value, because this repository is public and your token is not:
 
 ```bash
 echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
@@ -49,35 +53,15 @@ echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 
 ### Cursor
 
-The plugin is a Cursor Plugin: `.cursor-plugin/plugin.json`, `mcp.json`, `skills/athena/SKILL.md`,
-and the listing logo. Cursor asks for `ATHENA_TOKEN` at install time. The value is never in this
-repository.
-
-**From GitHub** (works today):
-
 1. Open **Customize → Plugins**.
 2. Add from GitHub repository: `https://github.com/hashaaamm/athena-plugin`.
 3. Install **engineering-athena**.
 4. When Cursor prompts, paste your personal `ath_...` token. Leave the MCP URL on the default
    unless you self-host.
 
-**Official Marketplace** (after review): same screen, search **Engineering Athena**, then Install.
-Submit the repo at [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish).
-
-**Local development:**
-
-```bash
-mkdir -p ~/.cursor/plugins/local/engineering-athena
-rsync -a --exclude .git --exclude templates \
-  /path/to/athena-plugin/ ~/.cursor/plugins/local/engineering-athena/
-```
-
-Then **Developer: Reload Window**, and confirm the skill and MCP server under Customize. Do not
-put a token in any file you copy.
-
-**Team Marketplace:** this is a single plugin at the repository root (no
-`.cursor-plugin/marketplace.json`). Import the repo if your plan supports that, or copy it into
-`~/.cursor/plugins/local`. Official Marketplace listing uses the root `.cursor-plugin/plugin.json`.
+The plugin is called `athena` to Claude Code and `engineering-athena` to Cursor. Deliberate:
+`/plugin install athena@engineering-athena` reads better than the alternative, and a listing wants
+a name nobody else will claim.
 
 ### Either way
 
@@ -87,45 +71,13 @@ the agent should reach for it the next time you ask for a feature.
 Both clients load the **same** `skills/athena/SKILL.md`. Not a port of it and not generated from
 it — one file, so neither client can be given advice the other was not.
 
-**To update**, in Claude Code:
-
-```bash
-/plugin marketplace update
-```
-
-In Cursor, an official Marketplace or Team Marketplace install refreshes itself. A personal
-GitHub add can stay pinned to the commit you first imported — prefer the marketplace if you
-want updates. Knowledge updates need neither: the handbook lives on the server, so standards
-and content change without anybody reinstalling anything. A plugin release is only needed when
-a *workflow* or the MCP contract changes.
-
 ## Getting a token
 
-Every caller authenticates; there is no anonymous access. Ask whoever runs your Athena instance
-for a token. It is issued per person, which is what lets the service tell callers apart and what
-makes a reference issued to you resolve only for you.
-
-## The service template
-
-A FastAPI service laid out the way the handbook argues for: routers that call a facade, a facade
-that calls services, services that call repositories, and nothing reaching backwards. Alembic,
-Docker, CI and CD, a justfile, tests, and an `AGENTS.md` so an agent opening the repository knows
-the rules before it writes anything.
-
-```bash
-pipx install cookiecutter   # or: uv tool install cookiecutter
-cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service
-```
-
-It asks for a project name and derives the rest. `include_frontend=yes` adds a React + TypeScript
-SPA beside the service — Vite, TanStack Router and Query, Tailwind v4 with shadcn/ui, and an API
-client generated from the backend's own OpenAPI document, with its own justfile, Compose service,
-CI workflow and production image. `use_postgres` and `use_sentry` drop the parts you are not using
-rather than leaving them stubbed.
+Every caller authenticates; there is no anonymous access. Ask whoever runs your Athena instance for
+a token. It is issued per person, which is what lets the service tell callers apart and what makes a
+reference issued to you resolve only for you.
 
 ## What you get
-
-
 
 Four categories, and the difference is what you do with each:
 
@@ -152,28 +104,12 @@ export ATHENA_MCP_URL=https://your-host/mcp
 
 Defaults to `https://mcp.engineeringathena.com/mcp`.
 
-## What is in here
+## Licence and data
 
-```
-LICENSE                           MIT
-PRIVACY.md                        what the plugin and the hosted MCP do with your data
-.claude-plugin/marketplace.json   the Claude Code marketplace
-.claude-plugin/plugin.json        the Claude Code manifest, and its MCP server definition
-.cursor-plugin/plugin.json        the Cursor manifest, logo, and install-time token variable
-assets/logo.svg                   the listing icon
-mcp.json                          the MCP server definition Cursor reads — placeholders only
-skills/athena/SKILL.md            the skill — both clients load this one file
-templates/cookiecutter-service/   the FastAPI service template (not part of the Cursor plugin)
-```
+MIT, in [LICENSE](LICENSE). What the plugin and the hosted MCP do with what an agent sends is in
+[PRIVACY.md](PRIVACY.md).
 
-And nothing else, on purpose. **This repository is a distribution channel, not a content channel.**
-What is here is what cannot be delivered any other way: a plugin has to be fetched from a
-marketplace, and `cookiecutter` works by cloning a git repository, so both need a public URL. The
-handbook's rules, guides, flows and knowledge are delivered through the MCP server, where they can
-be retrieved against the question you actually asked — publishing them as files would be a worse
-product and a bigger one.
-
-The skill and the template are authored in the handbook's own repository and copied here in one
-direction. There is exactly one copy of each: two files that are supposed to say the same thing
-will not, and the disagreement is invisible until somebody gets different advice from the same
-product depending on which editor they opened.
+**This repository is a distribution channel, not a content channel.** What is here is what cannot be
+delivered any other way — a plugin has to be fetched from a URL. The handbook's rules, guides, flows
+and knowledge are delivered through the MCP server, where they can be retrieved against the question
+you actually asked; publishing them as files would be a worse product and a bigger one.
