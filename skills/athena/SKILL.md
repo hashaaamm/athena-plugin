@@ -255,36 +255,30 @@ send it.
 
 ## Installing
 
-Two commands, and one credential. The plugin carries this skill and the MCP server together,
-because they are two halves of one thing — the server can answer a question, and the skill is what
-makes the agent ask.
+The plugin carries this skill and the MCP server together, because they are two halves of one
+thing — the server can answer a question, and the skill is what makes the agent ask. The token
+is never written into this repository. A credential in a tracked `.mcp.json` is a committed
+credential. What the hosted server does with a tool call is in `PRIVACY.md`.
+
+### Cursor
+
+Install **engineering-athena** from Customize → Plugins (Marketplace, or add
+`https://github.com/hashaaamm/athena-plugin` from GitHub). Cursor prompts for `ATHENA_TOKEN`.
+Leave the MCP URL on the default unless you self-host.
+
+### Claude Code
 
 ```bash
-# in Claude Code
 /plugin marketplace add hashaaamm/athena-plugin
 /plugin install athena@engineering-athena
-```
-
-Then put the token you were given where your shell will find it:
-
-```bash
 echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 ```
 
-The token is read from the environment, so it is never written into a file in your repository. A
-credential in a tracked `.mcp.json` is a committed credential.
-
 ### Without the plugin
 
-If you are self-hosting, or you want the server without the skill:
-
-```bash
-claude mcp add --scope user --transport http athena https://<your-athena-host>/mcp \
-  --header "Authorization: Bearer $ATHENA_TOKEN"
-```
-
-User scope, not project scope: the token is tied to you rather than to the repository. Copy this
-file to `~/.claude/skills/athena/SKILL.md` to get the skill as well.
+If you are self-hosting, or you want the server without the skill, add the MCP at user scope —
+the token is tied to you rather than to the repository — and copy this file to
+`~/.cursor/skills/athena/SKILL.md` or `~/.claude/skills/athena/SKILL.md`.
 
 ### Getting a token
 

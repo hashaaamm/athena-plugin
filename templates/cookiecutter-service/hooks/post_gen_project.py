@@ -76,7 +76,6 @@ def main() -> None:
             "backend/app/repositories/base.py",
             "backend/app/repositories/item_repository.py",
             "backend/app/services/item_service.py",
-            "backend/app/facades/item_facade.py",
             "backend/app/schemas/item.py",
             "backend/app/api/v1/item.py",
             "backend/app/seed.py",

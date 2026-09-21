@@ -1,4 +1,4 @@
-"""Item routes. Each one binds input, calls exactly one facade method, and returns.
+"""Item routes. Each one binds input, calls exactly one service method, and returns.
 
 There is nothing here worth unit testing. That is the point. Ask Athena for the layered
 architecture rules.
@@ -10,7 +10,7 @@ import uuid
 
 from fastapi import APIRouter, Query, status
 
-from app.api.deps import ItemFacadeDep
+from app.api.deps import ItemServiceDep
 from app.schemas.common import ErrorResponse
 from app.schemas.item import ItemCreate, ItemList, ItemRead
 
@@ -25,22 +25,22 @@ router = APIRouter(prefix="/items", tags=["items"])
     # client discovers in production.
     responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
 )
-async def create_item(payload: ItemCreate, facade: ItemFacadeDep) -> ItemRead:
-    return await facade.create_item(payload)
+async def create_item(payload: ItemCreate, service: ItemServiceDep) -> ItemRead:
+    return await service.create_item(payload)
 
 
 @router.get("", response_model=ItemList)
 async def list_items(
-    facade: ItemFacadeDep,
+    service: ItemServiceDep,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> ItemList:
-    return await facade.list_items(limit=limit, offset=offset)
+    return await service.list_items(limit=limit, offset=offset)
 
 
 @router.get("/{item_id}", response_model=ItemRead, responses={404: {"model": ErrorResponse}})
-async def get_item(item_id: uuid.UUID, facade: ItemFacadeDep) -> ItemRead:
-    return await facade.get_item(item_id)
+async def get_item(item_id: uuid.UUID, service: ItemServiceDep) -> ItemRead:
+    return await service.get_item(item_id)
 
 
 @router.delete(
@@ -48,5 +48,5 @@ async def get_item(item_id: uuid.UUID, facade: ItemFacadeDep) -> ItemRead:
     status_code=status.HTTP_204_NO_CONTENT,
     responses={404: {"model": ErrorResponse}},
 )
-async def delete_item(item_id: uuid.UUID, facade: ItemFacadeDep) -> None:
-    await facade.delete_item(item_id)
+async def delete_item(item_id: uuid.UUID, service: ItemServiceDep) -> None:
+    await service.delete_item(item_id)

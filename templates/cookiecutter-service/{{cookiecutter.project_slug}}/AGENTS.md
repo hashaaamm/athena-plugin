@@ -61,7 +61,7 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 ## Definition of done here
 
 - [ ] `just check` passes
-- [ ] A new endpoint has router + facade + service + repository + schemas + tests
+- [ ] A new endpoint has router + service + repository + schemas + tests
 {%- if cookiecutter.include_frontend == "yes" %}
 - [ ] An API change was followed by `just gen-api`, in the same commit
 {%- endif %}

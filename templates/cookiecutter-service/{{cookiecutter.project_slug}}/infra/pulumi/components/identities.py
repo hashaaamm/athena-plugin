@@ -129,7 +129,7 @@ class Identities(pulumi.ComponentResource):
         self.pool = gcp.iam.WorkloadIdentityPool(
             "github-pool",
             project=config.project,
-            workload_identity_pool_id=config.name("github"),
+            workload_identity_pool_id=config.pool_id("github"),
             display_name="GitHub Actions",
             opts=pulumi.ResourceOptions(parent=self),
         )

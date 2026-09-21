@@ -36,7 +36,7 @@ just --list     # every recipe, with its doc comment
 │   ├── scripts/             # copies stack outputs into GitHub repository variables
 │   └── pulumi/              # the stack, its components and their unit tests
 ├── backend/                 # the FastAPI service
-│   ├── app/{api,facades,services,repositories,models,schemas,core}
+│   ├── app/{api,services,repositories,models,schemas,core}
 │   ├── alembic/
 │   ├── docker/
 │   ├── tests/
@@ -60,11 +60,12 @@ has its own toolchain and its own workflow.
 
 ## The backend, in one paragraph
 
-Requests flow one way: `View → Facade → Service → Repository → Model → DB`. Views bind input and
-call exactly one facade method. Facades own a use case and convert entities to wire schemas.
-Services own the business rules and raise `AppError` subclasses — never `HTTPException`, so they
-stay callable from a worker or a CLI. Repositories own every query and `flush()`; the session
-dependency is the only thing that commits. `app/api/deps.py` is the only place the object graph is
+Requests flow one way: `View → Service → Repository → Model → DB`. Views bind input and call
+exactly one service method. A service method is the whole use case: it owns the business rules,
+orchestrates whatever else the case needs, and returns the wire schema — so no ORM instance reaches
+the view layer. Services raise `AppError` subclasses, never `HTTPException`, so they stay callable
+from a worker or a CLI. Repositories own every query and `flush()`; the session dependency is the
+only thing that commits. `app/api/deps.py` is the only place the object graph is
 assembled, which makes it the only seam a test has to override. `just lint` enforces all of this
 mechanically via `import-linter`.
 

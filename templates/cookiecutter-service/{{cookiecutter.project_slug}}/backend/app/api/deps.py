@@ -1,4 +1,4 @@
-"""THE object graph: repository -> service -> facade.
+"""THE object graph: repository -> service.
 
 The project structure rules MUST that construction happens here and nowhere else,
 because this is the single boundary a test can override. A view that builds its own service cannot
@@ -19,10 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 {%- if cookiecutter.use_postgres == "yes" %}
 from app.core.database import get_db_session
-{%- endif %}
-from app.facades.health_facade import HealthFacade
-{%- if cookiecutter.use_postgres == "yes" %}
-from app.facades.item_facade import ItemFacade
 from app.repositories.health_repository import HealthRepository
 from app.repositories.item_repository import ItemRepository
 {%- endif %}
@@ -49,13 +45,7 @@ def get_item_service(
     return ItemService(repository)
 
 
-def get_item_facade(
-    service: Annotated[ItemService, Depends(get_item_service)],
-) -> ItemFacade:
-    return ItemFacade(service)
-
-
-ItemFacadeDep = Annotated[ItemFacade, Depends(get_item_facade)]
+ItemServiceDep = Annotated[ItemService, Depends(get_item_service)]
 {%- endif %}
 
 
@@ -68,18 +58,12 @@ def get_health_repository(session: SessionDep) -> HealthRepository:
 
 def get_health_service(
     repository: Annotated[HealthRepository, Depends(get_health_repository)],
+    settings: SettingsDep,
 ) -> HealthService:
-    return HealthService(repository)
+    return HealthService(repository, version=settings.git_sha)
 {% else %}
-def get_health_service() -> HealthService:
-    return HealthService()
+def get_health_service(settings: SettingsDep) -> HealthService:
+    return HealthService(version=settings.git_sha)
 {% endif %}
 
-def get_health_facade(
-    service: Annotated[HealthService, Depends(get_health_service)],
-    settings: SettingsDep,
-) -> HealthFacade:
-    return HealthFacade(service, version=settings.git_sha)
-
-
-HealthFacadeDep = Annotated[HealthFacade, Depends(get_health_facade)]
+HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]

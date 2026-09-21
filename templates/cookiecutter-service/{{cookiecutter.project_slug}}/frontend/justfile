@@ -16,9 +16,15 @@ set shell := ["bash", "-uc"]
 compose := "docker compose -f ../docker-compose.yml"
 run     := "docker compose -f ../docker-compose.yml run --rm --no-deps frontend sh -c"
 
+# `docker compose run` REPLACES the service's command, so the `corepack enable` in
+# docker-compose.yml does not happen for any recipe here. node:24-slim ships corepack but puts no
+# pnpm on PATH until it is enabled, so every recipe enables it first — and gets the exact pnpm
+# pinned in package.json's `packageManager` field rather than whatever is newest.
+corepack := "corepack enable"
+
 # Dependencies are a named volume, not a bind mount, so a fresh clone has none. Every recipe
 # installs first; with the volume warm that is a no-op that costs about a second.
-deps := "pnpm install --frozen-lockfile"
+deps := corepack + " && pnpm install --frozen-lockfile"
 
 # Show available recipes
 default:
@@ -58,7 +64,7 @@ test-one TARGET: _env
 # The lockfile is not templated — a committed one would pin whatever existed when the template
 # was last touched. Every image build uses --frozen-lockfile, so a stale one fails loudly.
 lock: _env
-    {{run}} "pnpm install --lockfile-only"
+    {{run}} "{{corepack}} && pnpm install --lockfile-only"
 
 # --- API client ----------------------------------------------------------
 

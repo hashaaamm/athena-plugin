@@ -1,5 +1,7 @@
 # cookiecutter-service
 
+> **Authored in [Engineering-Athena](https://github.com/hashaaamm/Engineering-Athena), under `templates/cookiecutter-service/`.** If you are reading this in the plugin repository you are reading a copy: `just sync-plugin` deletes this tree and rewrites it from source, so an edit made here is lost at the next publish. Change it there.
+
 A production-ready **FastAPI service in a monorepo-shaped repository**, with an optional
 **React + TypeScript SPA** beside it. It generates a repo whose backend already satisfies the
 handbook's **MUST**s — layering, typed settings, async SQLAlchemy, Alembic, multi-stage image,
@@ -130,7 +132,7 @@ the file for a doubled brace that is not a cookiecutter variable you meant to wr
 
 ## What the generated backend gives you
 
-- **Layers, enforced.** `api → facades → services → repositories → models`, with `import-linter`
+- **Layers, enforced.** `api → services → repositories → models`, with `import-linter`
   contracts that fail CI on a violation, an ORM ban outside the data layer and an HTTP-types ban
   inside it.
 - **One composition point.** `app/api/deps.py` builds the graph; tests override the session there.

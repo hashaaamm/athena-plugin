@@ -26,7 +26,7 @@ RUN pnpm build
 FROM nginxinc/nginx-unprivileged:1.30-alpine AS production
 # The image's entrypoint runs envsubst over /etc/nginx/templates/*.template on start, which is how
 # $PORT — set by Cloud Run, and not known at build time — reaches the listen directive.
-COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 ENV PORT=8080
 EXPOSE 8080

@@ -1,4 +1,4 @@
-"""The HTTP contract, through the full stack: route -> facade -> service -> repository -> Postgres.
+"""The HTTP contract, through the full stack: route -> service -> repository -> Postgres.
 
 Nothing is mocked. These tests are what prove the layers are actually wired together, which no
 amount of unit testing at the service layer can tell you.

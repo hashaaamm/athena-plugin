@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Response, status
 
-from app.api.deps import HealthFacadeDep
+from app.api.deps import HealthServiceDep
 from app.schemas.health import ReadinessStatus
 
 router = APIRouter(tags=["health"])
@@ -22,8 +22,8 @@ async def live() -> dict[str, str]:
 
 
 @router.get("/health/ready", response_model=ReadinessStatus)
-async def ready(facade: HealthFacadeDep, response: Response) -> ReadinessStatus:
-    readiness = await facade.readiness()
+async def ready(service: HealthServiceDep, response: Response) -> ReadinessStatus:
+    readiness = await service.readiness()
     if readiness.status != "ok":
         # 503, not 500: this is "try again or send traffic elsewhere", not "this request is broken".
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

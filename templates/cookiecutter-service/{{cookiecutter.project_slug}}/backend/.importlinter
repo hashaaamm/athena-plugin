@@ -1,5 +1,6 @@
 # Enforces unidirectional data flow mechanically, so review does not have to.
-# Ask Athena for the layered architecture rules, and for the ADR behind the facade layer.
+# Ask Athena for the layered architecture rules, and for the ADR that made the service the entry
+# point.
 #
 # Run with: lint-imports   (wired into `just lint`, and the third gate in CI)
 
@@ -9,11 +10,10 @@ root_package = app
 include_external_packages = True
 
 [importlinter:contract:layers]
-name = Unidirectional flow: api -> facades -> services -> repositories -> models
+name = Unidirectional flow: api -> services -> repositories -> models
 type = layers
 layers =
     app.api
-    app.facades
     app.services
     app.repositories
     app.models
@@ -23,7 +23,6 @@ name = ORM is confined to models and repositories
 type = forbidden
 source_modules =
     app.api
-    app.facades
     app.services
 forbidden_modules =
     sqlalchemy
@@ -55,6 +54,5 @@ source_modules =
     app.core
 forbidden_modules =
     app.api
-    app.facades
     app.services
     app.repositories

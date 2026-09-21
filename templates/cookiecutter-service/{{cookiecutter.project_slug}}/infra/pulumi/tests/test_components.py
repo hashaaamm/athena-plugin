@@ -84,6 +84,62 @@ def test_a_long_project_name_is_shortened_rather_than_rejected():
     assert long.account_id("run") != long.account_id("ci")
 
 
+def test_the_pool_id_is_unique_within_the_project_not_just_the_stack():
+    """Two services in one GCP project must not both want the same pool.
+
+    A pool id is project-global. Building it from the kind and the environment alone — `github-dev`
+    for everybody — means the second service generated from this template fails `pulumi up` with a
+    409 on a pool the first one owns, and the id cannot be freed for 30 days.
+    """
+    import dataclasses
+
+    other = dataclasses.replace(CONFIG, slug="another-service")
+    assert CONFIG.pool_id("github") != other.pool_id("github")
+    assert CONFIG.pool_id("github").startswith(SLUG[:8])
+
+
+def test_two_long_slugs_sharing_a_prefix_do_not_trim_into_one_name():
+    """Trimming is where two distinct services become one name, and 32 characters is not many.
+
+    `platform-billing-service-api` and `platform-billing-service-web` both cut down to
+    `platform-billing-serv`, which is a 409 for whichever team deploys second and a name neither
+    can free for 30 days. The digest is taken over the untrimmed slug, so what the trim discards
+    still reaches the result.
+    """
+    import dataclasses
+
+    api = dataclasses.replace(CONFIG, slug="platform-billing-service-api")
+    web = dataclasses.replace(CONFIG, slug="platform-billing-service-web")
+    assert api.pool_id("github") != web.pool_id("github")
+
+
+def test_the_same_slug_in_two_repositories_is_two_pools():
+    """Two teams both calling their service `orders` in one project must not fight over a name."""
+    import dataclasses
+
+    ours = dataclasses.replace(CONFIG, slug="orders", github_repository="acme/orders")
+    theirs = dataclasses.replace(CONFIG, slug="orders", github_repository="other-team/orders")
+    assert ours.pool_id("github") != theirs.pool_id("github")
+
+
+def test_the_pool_id_is_the_same_every_time_it_is_computed():
+    """A random suffix would be more unique and unusable.
+
+    Pulumi would see a new pool id on every run, replace the pool every time, and drop the old id
+    into GCP's 30-day hold on each replacement. Determinism is the requirement, not an optimisation.
+    """
+    assert CONFIG.pool_id("github") == CONFIG.pool_id("github")
+
+
+def test_a_long_project_name_still_yields_a_pool_id_gcp_accepts():
+    import dataclasses
+
+    long = dataclasses.replace(CONFIG, slug="a-very-long-service-name-indeed", environment="prod")
+    pool = long.pool_id("github")
+    assert 4 <= len(pool) <= 32, pool
+    assert re.fullmatch(r"[a-z][a-z0-9-]{2,30}[a-z0-9]", pool), pool
+
+
 # --- Security -------------------------------------------------------------
 
 

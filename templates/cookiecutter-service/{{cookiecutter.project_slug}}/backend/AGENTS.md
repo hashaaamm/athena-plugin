@@ -21,17 +21,18 @@ Read [../AGENTS.md](../AGENTS.md) and the handbook's `AGENTS.md` first.
 app/
 ├── api/deps.py      # THE object graph; api/v1/ holds one router module per resource
 ├── core/            # config, database, logging, exceptions{% if cookiecutter.use_sentry == "yes" %}, observability{% endif %}
-├── facades/         # one per resource; ORM -> schema; one method per use case
-├── services/        # business rules; raise AppError, never HTTPException
+├── services/        # one method per use case; business rules; ORM -> schema;
+│                    # raise AppError, never HTTPException
 ├── repositories/    # every query lives here; flush(), never commit()
 ├── models/
 ├── schemas/
 └── main.py          # app factory + lifespan
 ```
 
-The flow is one-directional: `View -> Facade -> Service -> Repository -> Model -> DB`. Never skip a
-layer, never call backwards. `just lint` runs `lint-imports`, which fails on a violation — the
-contracts are in `.importlinter`.
+The flow is one-directional: `View -> Service -> Repository -> Model -> DB`. Never skip a layer,
+never call backwards. A view makes exactly one service call, and what it calls returns a Pydantic
+response schema — an ORM instance never reaches the view layer. `just lint` runs `lint-imports`,
+which fails on a violation — the contracts are in `.importlinter`.
 
 ## Rules specific to this service
 
@@ -45,5 +46,5 @@ contracts are in `.importlinter`.
 
 ## Where to start when adding a resource
 
-Copy `item` end to end — model, schema, repository, service, facade, router, tests — rename, and
-delete what you do not need. Then delete the `item` example itself once a real resource exists.
+Copy `item` end to end — model, schema, repository, service, router, tests — rename, and delete
+what you do not need. Then delete the `item` example itself once a real resource exists.

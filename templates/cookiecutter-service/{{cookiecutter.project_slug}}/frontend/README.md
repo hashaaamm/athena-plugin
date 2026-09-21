@@ -91,7 +91,7 @@ environment variables: a value passed to `docker run` arrives after the bundle a
 ## Production image
 
 Two stages: pnpm builds the static files, `nginx-unprivileged` serves them on `${PORT}` as a
-non-root user, with the SPA fallback and cache headers in `docker/nginx.conf.template`. The
+non-root user, with the SPA fallback and cache headers in `docker/default.conf.template`. The
 runtime image carries the output, not the toolchain that produced it.
 
 ## What is deliberately not here

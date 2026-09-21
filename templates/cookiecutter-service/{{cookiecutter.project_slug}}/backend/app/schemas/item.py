@@ -14,7 +14,7 @@ class ItemCreate(BaseModel):
 
 
 class ItemRead(BaseModel):
-    # Required for `model_validate` to accept an ORM instance. Without it the facade fails at
+    # Required for `model_validate` to accept an ORM instance. Without it the service fails at
     # runtime rather than at type-check time.
     model_config = ConfigDict(from_attributes=True)
 

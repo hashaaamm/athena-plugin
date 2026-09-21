@@ -7,6 +7,7 @@ and stops configuration keys being invented at three different call sites.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import pulumi
@@ -14,6 +15,28 @@ import pulumi
 #: GCP service-account ids are 6-30 characters. The environment suffix and the role suffix are
 #: fixed-width, so the project slug is what has to give when a name is long.
 MAX_ACCOUNT_ID = 30
+
+#: Workload Identity Pool ids are 4-32 characters, and the same squeeze applies.
+MAX_POOL_ID = 32
+
+#: Characters of digest appended to a pool id. Four is 65,536 values, which is not a cryptographic
+#: guarantee and does not need to be: the thing it separates is two services a human deliberately
+#: named in one project, not an adversary hunting a collision.
+DISAMBIGUATOR = 4
+
+
+def _digest(*parts: str) -> str:
+    """A stable short id for a name, derived from everything that makes it that name.
+
+    Deterministic, and that is the whole requirement. A *random* suffix would be more unique and
+    would also be unusable: Pulumi would see a different pool id on every run, replace the pool
+    every time, and each replacement puts the old id into GCP's 30-day hold. A name that cannot be
+    computed twice is not a name.
+
+    It hashes the repository as well as the slug, so two teams who both call their service `orders`
+    in one GCP project get different pools rather than a 409 and an argument about who was first.
+    """
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:DISAMBIGUATOR]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +90,35 @@ class StackConfig:
         if not 6 <= len(account) <= MAX_ACCOUNT_ID:
             raise ValueError(f"service account id {account!r} is not 6-30 characters")
         return account
+
+    def pool_id(self, kind: str) -> str:
+        """A Workload Identity Pool id, unique within the *project* rather than the stack.
+
+        `name()` is not enough here, and the difference between them is a 409 on somebody else's
+        resource. A pool id is unique across a GCP project, and two services generated from this
+        template into the same project both want one — so an id built from the kind and the
+        environment alone is already taken the second time, by a pool this stack does not own and
+        must not adopt. Every other project-global name in this stack already carries the slug for
+        exactly this reason: the Cloud SQL instance, the registry repository, each secret and each
+        service account. The pool is the one that did not.
+
+        Deleting a pool to free its name does not help either: GCP keeps it for 30 days before the
+        id can be reused, which turns a rename into a month of waiting. Get it right the first time.
+
+        The trailing digest is what makes "unique" true rather than usually-true. 32 characters is
+        not many, so a long slug gets trimmed, and trimming is exactly where two distinct services
+        become one name: `platform-billing-service-api` and `platform-billing-service-web` both cut
+        down to `platform-billing-serv`. The digest is taken over the *untrimmed* slug and the
+        repository, so what the trim throws away is still represented in the result.
+        """
+        suffix = f"-{kind}-{self.environment}-{_digest(self.slug, self.github_repository)}"
+        head = self.slug[: MAX_POOL_ID - len(suffix)].rstrip("-")
+        pool = f"{head}{suffix}"
+        if not 4 <= len(pool) <= MAX_POOL_ID:
+            raise ValueError(f"workload identity pool id {pool!r} is not 4-32 characters")
+        if pool.startswith("gcp-"):
+            raise ValueError(f"workload identity pool id {pool!r} may not start with 'gcp-'")
+        return pool
 
     @property
     def registry_host(self) -> str:
