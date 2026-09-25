@@ -380,8 +380,33 @@ def test_the_teardown_script_cannot_strand_a_stack():
     the same bet `pulumi up` makes: refuse rather than guess when nothing can answer."""
     script = (PULUMI_DIR.parent / "bootstrap" / "teardown.sh").read_text()
     assert "stack export" in script, "the emptiness check is the guard; do not remove it"
+    assert "stack ls --all" in script, (
+        "without --all, `stack ls` returns only this Pulumi project's stacks and another "
+        "project's live stack is absent rather than under-counted — see ADR-0013"
+    )
     assert "! -t 0" in script, "must refuse when nothing can confirm"
     assert '"${reply}" != "${BUCKET}"' in script, "must make a human type the bucket name"
+
+
+def test_the_teardown_script_cannot_delete_a_backend_it_shares():
+    """Pulumi standards MUST-8. `state-bucket.sh` derives the bucket from the GCP project alone —
+    `gs://${PROJECT}-pulumi-state`, no per-service component — so a second service generated into
+    the same project bootstraps onto the same bucket by construction. One backend, a directory per
+    Pulumi project under `.pulumi/stacks/`, and deleting the bucket deletes all of them.
+
+    The emptiness check above cannot see that case and this one does not rely on it: ownership is
+    a different question from resource count, because another project's stacks can hold nothing
+    today and be applied tomorrow.
+    """
+    script = (PULUMI_DIR.parent / "bootstrap" / "teardown.sh").read_text()
+    assert "/.pulumi/stacks/" in script, (
+        "ownership is established by listing the backend's project directories"
+    )
+    assert "PULUMI_PROJECT" in script, "the listing has to be compared against this project's name"
+    stacks_at = script.index("/.pulumi/stacks/")
+    assert stacks_at < script.index("gcloud storage rm"), (
+        "the backend listing must happen before anything is deleted"
+    )
 
 
 def test_every_service_the_stack_uses_has_its_api_enabled():
@@ -507,6 +532,39 @@ def test_the_database_accepts_no_direct_connections():
         return True
 
     return Database(CONFIG).instance.settings.apply(check)
+
+
+def test_the_role_is_dropped_after_the_database_and_not_beside_it():
+    """The one ordering in this stack that only matters on the way out.
+
+    Pulumi deletes a dependency graph backwards, so `database depends_on user` is what makes the
+    database go first and the role second. Both resources name the same instance and the same
+    `app`, and neither of those is a dependency Pulumi can infer: `instance=` ties each of them to
+    the *instance*, not to each other. Without the edge they are deleted concurrently, Cloud SQL
+    runs `DROP ROLE "app"` while the database still holds the tables Alembic created, and Postgres
+    refuses — `role "app" cannot be dropped because some objects depend on it`. The destroy stops
+    there with the instance still running and still billing.
+
+    Asserted through a transformation because `depends_on` is consumed at registration and kept on
+    no attribute afterwards; there is nothing on the resource to read it back from. A
+    transformation on the component reaches every child and sees the options as passed.
+    """
+    from components import Database
+
+    seen: dict[str, Any] = {}
+
+    def record(
+        args: pulumi.ResourceTransformationArgs,
+    ) -> pulumi.ResourceTransformationResult:
+        seen[args.name] = args.opts.depends_on
+        return pulumi.ResourceTransformationResult(props=args.props, opts=args.opts)
+
+    database = Database(CONFIG, opts=pulumi.ResourceOptions(transformations=[record]))
+    depends_on = seen["database"]
+    assert isinstance(depends_on, list) and database.user in depends_on, (
+        "sql.Database must depend on sql.User, or destroy deletes the role and the database "
+        "at the same time and Cloud SQL refuses to drop the role"
+    )
 
 
 @pulumi.runtime.test

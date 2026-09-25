@@ -61,6 +61,7 @@ deployed bundle to be wrong.
 ```
 1. just infra-destroy dev                 removes every resource the stack created
 2. just infra-teardown                    removes the two resources the stack never created
+                                          (refuses when another project shares the backend)
 3. gcloud kms keys delete … (30 days on)  KMS will not go faster; step 2 prints the commands
 ```
 
@@ -70,14 +71,25 @@ what the stack created and nothing else, and the state bucket and the KMS key we
 ever take them away. Destroy a stack and walk away and you are left holding a versioned GCS bucket
 and a KMS key ring, quietly, indefinitely — which is the whole reason `teardown.sh` exists.
 
-The order is the trap. The bucket holds the state `pulumi destroy` reads, so deleting the bucket
-first strands the stack: every resource it created still exists, still bills, and the only record
-of what those resources are has just been deleted. `teardown.sh` will not let that happen by
-accident — before it deletes anything it exports **every** stack in the backend, not the one you
-named, and refuses while any of them still holds a resource. Then it asks you to type the bucket
-name, and refuses outright when nothing can answer, for the same reason `just infra-up` refuses a
-non-interactive apply. There is deliberately no `--yes` here: an unattended teardown of a state
-bucket is not something this repository will do on your behalf.
+**The bucket may not be yours, and that is the default rather than the edge case.**
+`state-bucket.sh` derives the name from the GCP project alone — `gs://${PROJECT}-pulumi-state`,
+with no per-service component — and the key ring `pulumi` and key `stack` the same way. Generate a
+second service into the same project and region and it bootstraps onto the same bucket and the same
+key, by construction: the script finds them already there and reuses them. One backend then holds
+several Pulumi projects, a directory each under `.pulumi/stacks/`, and deleting the bucket deletes
+all of their state. So `teardown.sh` lists that prefix first and refuses when it finds a directory
+this project does not own, printing the `pulumi stack rm --remove-backups` path instead — that is
+[Pulumi standards](https://engineeringathena.com/rules/iac/pulumi-standards) MUST-8. A listing it
+cannot read counts as shared.
+
+The order is the second trap. The bucket holds the state `pulumi destroy` reads, so deleting the
+bucket first strands the stack: every resource it created still exists, still bills, and the only
+record of what those resources are has just been deleted. `teardown.sh` will not let that happen by
+accident either — it exports every stack in the backend, `--all` rather than only this Pulumi
+project's, and refuses while any of them still holds a resource. Then it asks you to type the
+bucket name, and refuses outright when nothing can answer, for the same reason `just infra-up`
+refuses a non-interactive apply. There is deliberately no `--yes` here: an unattended teardown of a
+state bucket is not something this repository will do on your behalf.
 
 Step 3 is separate because **a KMS key cannot be hard-deleted on demand.** `destroy` schedules a
 key *version* for destruction and it sits in that state for the key's destroy-scheduled duration —
@@ -286,9 +298,15 @@ for. A downloaded key is a long-lived credential in a file and the handbook bans
 
 A second environment is a new `Pulumi.<stack>.yaml` and a second `state-bucket.sh` run against its
 project — not a second program. Every resource name already carries the environment, so two stacks
-can share one project without colliding. Two stacks sharing one bucket is also why `teardown.sh`
-checks every stack in the backend rather than the one you name; run it against another project by
-setting `GCP_PROJECT`, the same variable `state-bucket.sh` reads. Set both environment keys in the
+can share one project without colliding. Two stacks sharing one bucket is why `teardown.sh` checks
+every stack in the backend — `pulumi stack ls --all`, because without the flag it sees only this
+Pulumi project's — rather than the one you name; run it against another project by setting
+`GCP_PROJECT`, the same variable `state-bucket.sh` reads.
+
+A second **service** in the same project shares the bucket too, and that one is not a stack this
+program can enumerate: it is another Pulumi project with its own directory in the backend. Tearing
+down either service leaves the other's state where it is — `teardown.sh` refuses on the directory
+listing — so the bucket and the key outlive both, and the last one out deletes them. Set both environment keys in the
 new file: `environment`
 for the names, `appEnvironment` for how the service behaves. A `prod` stack that keeps the default
 `staging` is a production service serving its own OpenAPI document.

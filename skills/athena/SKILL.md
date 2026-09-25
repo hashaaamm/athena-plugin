@@ -47,6 +47,21 @@ and you get one query's worth of answer.
 Work out the requirements by reading the repository first — what exists, what is missing, what the
 change touches. `paths` sharpens it further: pass the files the change will write.
 
+### Say the subject. A filename is not a subject.
+
+Athena does not infer what you are doing from what you are touching, and it will not pretend to. A
+path answers "which files", and the rules are written about "which question" — adding a column,
+renaming one and fixing a slow query all touch the same model file and are bound by different
+rules. So the subject is yours to state, in `requirements` here and in `topics` on `athena_rules`.
+
+`paths` still earns its place, and it is worth passing alongside the subject rather than instead of
+it: a page that declares it governs `app/models/**` will surface a rule you did not know to ask
+about, which is the entire reason to consult a handbook. But a path only answers when some page
+declared it. When none has, `athena_rules` returns no rules and an `advice` string saying so.
+
+**That empty answer means "nobody wrote down which files this governs" — never "no rules apply".**
+Do not read it as a clean bill of health and carry on. Name the subject and ask again.
+
 ## Planning mode
 
 When you are producing a plan rather than code, add `plan=True`. You get the work back as ordered
@@ -157,7 +172,7 @@ Reach for these when you already know which question you are asking.
 
 | Tool | Ask it |
 | --- | --- |
-| `athena_rules` | "Here is the diff — what must hold?" Scope it with `paths` or `topics`; a framework alone is refused. |
+| `athena_rules` | "Here is the diff — what must hold?" **Say what the change is about: `topics=['authorization', 'migrations']`.** `paths` narrows it further, but only answers for files a page declares it governs — see below. A framework alone is refused. |
 | `athena_guide` | "How do I build X?" One guide, with its code and the rules that bind it. |
 | `athena_knowledge` | "What must I keep in mind about X?" Synthesis, not passages. |
 | `athena_route` | "I do not know where to start." Returns the category and the next call, no content. |

@@ -72,14 +72,6 @@ class Database(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self),
         )
 
-        self.database = gcp.sql.Database(
-            "database",
-            project=config.project,
-            instance=self.instance.name,
-            name=DB_NAME,
-            opts=pulumi.ResourceOptions(parent=self),
-        )
-
         # Generated, never chosen. A password a human typed is a password a human can reuse, and
         # this one only ever travels from Secret Manager into the runtime environment.
         self.password = random.RandomPassword(
@@ -98,6 +90,23 @@ class Database(pulumi.ComponentResource):
             name=DB_NAME,
             password=self.password.result,
             opts=pulumi.ResourceOptions(parent=self, additional_secret_outputs=["password"]),
+        )
+
+        # `depends_on` is load-bearing and it is here for the *destroy*, which runs this graph
+        # backwards: a dependent is deleted before the thing it depends on, so the database goes
+        # first and the role second. Without the edge Pulumi has no ordering between them and
+        # deletes both at once. Cloud SQL then runs `DROP ROLE "app"` while the database `app` is
+        # still there holding tables Alembic created, Postgres refuses with `role "app" cannot be
+        # dropped because some objects depend on it`, and the destroy fails with the instance and
+        # the role still standing. Sharing an instance and a name is not a dependency Pulumi can
+        # infer — `instance=self.instance.name` ties both of these to the *instance*, not to each
+        # other.
+        self.database = gcp.sql.Database(
+            "database",
+            project=config.project,
+            instance=self.instance.name,
+            name=DB_NAME,
+            opts=pulumi.ResourceOptions(parent=self, depends_on=[self.user]),
         )
 
         #: The DSN the service reads as `DATABASE_URL_OVERRIDE`. `?host=/cloudsql/<connection>` is
