@@ -80,7 +80,8 @@ Use it when:
 - you are about to fan work out, and each sub-agent should pull its own content into its own context
 
 For genuinely multi-step work, a context response may offer a **flow**. Call `athena_flow` with that
-reference.
+reference, and the `framework` and `lang` you are working in — not with a sentence describing the
+goal, which makes the server search again for something it already handed you.
 
 ## Running a flow: you orchestrate, you do not execute
 
@@ -116,10 +117,17 @@ So, mechanically:
    the repository and spends money — a project, a bucket, a live service. Confirm with the person
    before you spawn it, every time. Read the flag off each unit: the directive says the condition
    is present, not which steps or how many.
-6. **Wait for the whole group, then check `after_each_group`** before starting the next one. Each
+6. **Settle `alternatives` before the units they name.** Each entry is a choice the flow made by
+   taking its default — Cloud Run where Cloud Storage behind a load balancer was also on offer.
+   If the request or the repository already settles it, pass that option's `variant` key in
+   `variants` and plan again without asking. Otherwise ask the person, as a choice between
+   `default` and each of `instead`, before the first of the entry's `units` runs. Another option
+   means calling `athena_flow` again with the same arguments plus `variants=[key]` and running
+   that plan instead of this one.
+7. **Wait for the whole group, then check `after_each_group`** before starting the next one. Each
    sub-agent reports the files it changed and whether its `verify` checks passed; that result is
    what you gate on, and it is all you take back.
-7. **On a failure, do what `on_failure` says** — which includes reporting it with `athena_feedback`,
+8. **On a failure, do what `on_failure` says** — which includes reporting it with `athena_feedback`,
    for each unit whose verification failed.
 
 Your own context stays thin on purpose: the plan, the ordering, the checkpoints and each sub-agent's
