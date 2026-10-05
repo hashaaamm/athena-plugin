@@ -2,7 +2,7 @@
   <title>Engineering Athena</title>
   <!--
     The listing icon: `athena-mark.svg` on the ground the landing page stands on. Every colour is a
-    design token — `#161826` is `--color-bg` and `#2b2741` is `--color-accent-900`, which is the
+    design token — `#161826` is the `color-bg` token and `#2b2741` is `color-accent-900`, which is the
     same `rgb(43, 39, 65)` the page's body wash uses. The corner radius is 21.9% of the side, the
     ratio the 32px favicon in `apps/web/src/app/icon.svg` already uses.
 
