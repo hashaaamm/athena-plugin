@@ -33,8 +33,8 @@ as a tree, and it does not send the token to anyone except the MCP URL you set.
 
 - We do not use Plugin Data or User Content to train or fine-tune models.
 - We do not sell, rent, or transfer Plugin Data to third parties.
-- We do not charge for this plugin. The Marketplace listing is free. A token is how the hosted
-  service tells callers apart.
+- We do not charge for this plugin or for the hosted service. A token is how the hosted service
+  tells callers apart.
 
 ## Self-hosted instances
 

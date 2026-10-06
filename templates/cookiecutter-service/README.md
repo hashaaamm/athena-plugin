@@ -1,6 +1,6 @@
 # cookiecutter-service
 
-> **Authored in [Engineering-Athena](https://github.com/hashaaamm/Engineering-Athena), under `templates/cookiecutter-service/`.** If you are reading this in the plugin repository you are reading a copy: `just sync-plugin` deletes this tree and rewrites it from source, so an edit made here is lost at the next publish. Change it there.
+> **This is a published copy.** It is generated from Athena's source and rewritten on every publish, so an edit made here is lost at the next one. Report a problem as an issue on the repository you found it in.
 
 A production-ready **FastAPI service in a monorepo-shaped repository**, with an optional
 **React + TypeScript SPA** beside it. It generates a repo whose backend already satisfies the
@@ -26,8 +26,9 @@ expensive to find there and are pre-fixed here.
 ## Use it
 
 ```bash
-uvx cookiecutter templates/cookiecutter-service        # interactive
-uvx cookiecutter --no-input templates/cookiecutter-service project_name="Billing API"
+uvx cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service   # interactive
+uvx cookiecutter --no-input gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service \
+  project_name="Billing API"
 ```
 
 Then, in the generated repository:

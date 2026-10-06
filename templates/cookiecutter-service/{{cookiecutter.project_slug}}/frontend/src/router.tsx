@@ -42,7 +42,7 @@ const rootRoute = createRootRoute({ component: () => <Outlet /> });
  *
  * This is a UX boundary and not a security one. The bundle is static files served to anyone who
  * asks; what keeps data private is the backend answering 401 without a valid bearer token. Ask
- * Athena for `standard/browser-authentication` before you reason about either.
+ * Athena about authentication in the browser before you reason about either.
  *
  * There is no `next` parameter, and that is deliberate rather than unfinished. A `next` taken
  * from the URL and navigated to is an open redirect unless it is validated against the route

@@ -79,7 +79,7 @@ key, by construction: the script finds them already there and reuses them. One b
 several Pulumi projects, a directory each under `.pulumi/stacks/`, and deleting the bucket deletes
 all of their state. So `teardown.sh` lists that prefix first and refuses when it finds a directory
 this project does not own, printing the `pulumi stack rm --remove-backups` path instead — that is
-[Pulumi standards](https://engineeringathena.com/rules/iac/pulumi-standards) MUST-8. A listing it
+the Pulumi standards' MUST-8 — ask Athena for it. A listing it
 cannot read counts as shared.
 
 The order is the second trap. The bucket holds the state `pulumi destroy` reads, so deleting the

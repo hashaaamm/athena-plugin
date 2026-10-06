@@ -216,10 +216,13 @@ something plausible and subtly wrong, and nobody finds out until review.
 **Apply it to this repository.** The handbook does not know your code. Take what fits, say plainly
 what does not and why, and summarise for the person rather than pasting the response back at them.
 
-**Read `provenance` on every rule.** `endorsed` means a human read the page and stood behind it —
-that one is not negotiable. `unverified` means the page is finished and nobody has signed it off:
-quote it, follow it unless your code has a reason not to, and say which. `draft`, `stale` and
-`deprecated` are weaker still.
+**The person decides.** Where a rule and the repository's own convention disagree, use your
+judgement, and say which you followed and why, naming the rule. The person can override either way,
+a **MUST** included — tell them what the rule says and let them choose. Where your own habit and a
+rule disagree, the rule wins.
+
+**Read `provenance` on every rule.** `endorsed` is current and in force. `stale` is past its review
+date, `draft` is unfinished, and `deprecated` is superseded — say which when you rely on one.
 
 **Cite what you used** by title and reference — in the plan, in the commit message, in the review
 comment. References are opaque, they are issued to you, and they are the only way to point at a page.
@@ -295,9 +298,9 @@ credential. What the hosted server does with a tool call is in `PRIVACY.md`.
 
 ### Cursor
 
-Install **engineering-athena** from Customize → Plugins (Marketplace, or add
-`https://github.com/hashaaamm/athena-plugin` from GitHub). Cursor prompts for `ATHENA_TOKEN`.
-Leave the MCP URL on the default unless you self-host.
+In Customize → Plugins, add `https://github.com/hashaaamm/athena-plugin` from GitHub and install
+**engineering-athena** — the Cursor Marketplace listing is still being submitted. Cursor prompts for
+`ATHENA_TOKEN`. Leave the MCP URL on the default unless you self-host.
 
 ### Claude Code
 
@@ -309,14 +312,16 @@ echo 'export ATHENA_TOKEN=ath_...' >> ~/.zshrc && exec zsh
 
 ### Without the plugin
 
-If you are self-hosting, or you want the server without the skill, add the MCP at user scope —
-the token is tied to you rather than to the repository — and copy this file to
-`~/.cursor/skills/athena/SKILL.md` or `~/.claude/skills/athena/SKILL.md`.
+If your client cannot install the plugin, install both halves by hand: add the MCP server at user
+scope — the token is tied to you rather than to the repository — and copy this file to
+`~/.cursor/skills/athena/SKILL.md` or `~/.claude/skills/athena/SKILL.md`. Not the server alone:
+without this file an agent can reach Athena and rarely asks it well.
 
 ### Getting a token
 
-Ask whoever runs your Athena instance. If that is you, mint one over HTTP — the value is returned
-once and never again, because only its SHA-256 digest is stored:
+Sign up at [app.engineeringathena.com](https://app.engineeringathena.com) and create a personal
+token there. It is shown once and never again, because only its SHA-256 digest is stored. On a
+self-hosted instance, the same three calls over HTTP do it:
 
 ```bash
 BASE=https://<your-athena-host>

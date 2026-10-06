@@ -1,7 +1,8 @@
 # Agent rules — {{ cookiecutter.project_name }}
 
-Read the organisation-wide rules first: the Engineering Athena handbook's `AGENTS.md`. They apply
-in full. This file is a **map** of the repository; each subtree carries its own rules.
+The general standards come from Athena: ask it for what a change needs before planning it — the
+athena skill says how. This file is a **map** of the repository; each subtree carries its own
+rules.
 
 | Subtree | Rules | What it is |
 | --- | --- | --- |

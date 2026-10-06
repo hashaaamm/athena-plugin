@@ -1,7 +1,6 @@
 # Agent rules — frontend
 
-Read [../AGENTS.md](../AGENTS.md) and the handbook's `AGENTS.md` first. This file covers the web
-client only. Ask Athena for the frontend rules before you plan a change here — this is a summary
+Read [../AGENTS.md](../AGENTS.md) first. This file covers the web client only. Ask Athena for the frontend rules before you plan a change here — this is a summary
 of what the code already does, not a substitute for them.
 
 ## The stack, and what not to add to it

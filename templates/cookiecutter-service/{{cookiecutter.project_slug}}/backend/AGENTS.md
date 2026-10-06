@@ -1,6 +1,6 @@
 # Agent rules — backend
 
-Read [../AGENTS.md](../AGENTS.md) and the handbook's `AGENTS.md` first.
+Read [../AGENTS.md](../AGENTS.md) first, and ask Athena for the standards a change needs.
 
 ## Stack
 

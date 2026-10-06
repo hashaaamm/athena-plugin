@@ -58,8 +58,9 @@ the agent should reach for it the next time you ask for a feature.
 
 ## Getting a token
 
-Every caller authenticates; there is no anonymous access. Ask whoever runs your Athena instance for
-a token. It is issued per person.
+Every caller authenticates; there is no anonymous access. Sign up at
+[app.engineeringathena.com](https://app.engineeringathena.com) and create a personal token there —
+it is shown once and never again. On a self-hosted instance, ask whoever runs it.
 
 ## Pointing at your own instance
 
