@@ -23,17 +23,17 @@ Do not call it for a typo, a rename, or a question about this repository's own c
 ## The default: one call
 
 `athena_context` returns all four categories at once. Read the request, work out what the change
-actually needs, and pass that as `requirements` — one per thing:
+actually needs, and pass that as `requirements` — one per thing, at most six:
 
 ```
 athena_context(
   task="add an /orders endpoint where a user can create an order",
   requirements=[
-    "a database model and a migration",
-    "request and response schemas",
-    "the business logic",
-    "error handling",
-    "the api route itself",
+    "SQLAlchemy model and Alembic migration for orders",
+    "Pydantic request and response schemas for creating an order",
+    "service-layer business logic for creating an order",
+    "mapping domain errors to HTTP responses in FastAPI",
+    "wiring the FastAPI router for the orders endpoint",
   ],
   framework="fastapi",
   lang="python",
@@ -43,6 +43,12 @@ athena_context(
 **Stating the requirements is the whole trick.** Each one is searched for separately, and every rule
 and guide comes back labelled with the requirement it answers. Without them the task is one query
 and you get one query's worth of answer.
+
+**Write each requirement so it stands on its own.** Each is searched for separately, so it has to
+name its own subject — the tool or framework, and the thing being built. "Error handling" or "the
+api route itself" could be about any stack, and Athena can only guess which page you meant; "mapping
+domain errors to HTTP responses in FastAPI" cannot be mistaken for anything else. If a requirement
+would be ambiguous read on its own, add the subject.
 
 Work out the requirements by reading the repository first — what exists, what is missing, what the
 change touches. `paths` sharpens it further: pass the files the change will write.
