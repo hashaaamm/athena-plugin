@@ -34,6 +34,7 @@ athena_context(
     "service-layer business logic for creating an order",
     "mapping domain errors to HTTP responses in FastAPI",
     "wiring the FastAPI router for the orders endpoint",
+    "REST design for POST /orders: resource path, status codes and error responses",
   ],
   framework="fastapi",
   lang="python",
