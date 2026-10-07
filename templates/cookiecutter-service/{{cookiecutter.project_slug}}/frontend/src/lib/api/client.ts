@@ -1,7 +1,7 @@
-import createClient from "openapi-fetch";
+import createClient{% if cookiecutter.use_postgres == "yes" %}, { type Middleware }{% endif %} from "openapi-fetch";
 
 {% if cookiecutter.use_postgres == "yes" -%}
-import { enforceSession, getToken } from "@/lib/auth";
+import { endSession, enforceSession, getToken, refreshOnce } from "@/lib/auth";
 {% endif -%}
 import type { paths } from "./schema";
 
@@ -20,25 +20,94 @@ export const api = createClient<paths>({
 
 {% if cookiecutter.use_postgres == "yes" -%}
 /**
+ * The options every call that carries the refresh cookie passes: the cookie itself, and the header
+ * the backend's CSRF check requires on refresh and logout. A cross-site page cannot add a custom
+ * header without a CORS preflight the backend's origin allowlist refuses.
+ *
+ * `credentials: "include"` goes on these calls only, not on the client. Every other request is a
+ * bearer-token request with no cookie in play, and enabling credentials there buys a stricter CORS
+ * contract and nothing else. Login and change-password use `WITH_COOKIE` alone: they do not read the
+ * cookie, but a browser ignores the `Set-Cookie` of a cross-origin response without it.
+ */
+export const WITH_COOKIE = { credentials: "include" } as const;
+export const SESSION_COOKIE = {
+  credentials: "include",
+  headers: { "X-Requested-With": "fetch" },
+} as const;
+
+/**
+ * The routes that answer for the refresh cookie rather than for a bearer token. A 401 from one of
+ * them is an answer — wrong password, no session to restore — and never a reason to refresh.
+ */
+const SESSION_ROUTES = new Set(["/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout"]);
+
+/** Spend the refresh cookie. Resolves to the new access token, or `null` if the backend refused. */
+async function requestRefresh(): Promise<string | null> {
+  const { data, response } = await api.POST("/api/v1/auth/refresh", SESSION_COOKIE);
+  return response.ok && data !== undefined ? data.access_token : null;
+}
+
+/**
+ * A new access token from the refresh cookie, shared by every concurrent caller — see `refreshOnce`
+ * in `lib/auth.ts` for why one at a time is a correctness rule rather than an optimisation. The
+ * route guard calls it after a reload; the middleware below calls it on a 401.
+ */
+export function refreshSession(): Promise<string | null> {
+  return refreshOnce(requestRefresh);
+}
+
+/**
+ * An unread copy of every request sent with a bearer token, kept until its response arrives. A
+ * request body can be read once, and replaying a POST after a refresh needs one nobody has read.
+ */
+const replays = new WeakMap<Request, Request>();
+
+/**
  * Authentication, attached once. Both halves are middleware because both halves are properties
  * of *every* request, and a property enforced at call sites is a property until somebody forgets.
  *
- * `onRequest` sends the bearer token when there is one. `onResponse` hands every answer to
- * `enforceSession`, which is the only code in this application that decides what a 401 means —
- * see `lib/auth.ts` for the guards that keep it from firing on a failed login or looping on
- * `/login`. Nothing else, anywhere, handles a 401.
+ * `onRequest` sends the bearer token when there is one. `onResponse` is the only code in this
+ * application that decides what a 401 means. For a request that carried an access token it is
+ * almost always "that token expired", so it refreshes — once, however many requests failed
+ * together — and replays the request with the new token; the caller sees the replay's answer and
+ * never the 401. Only when the refresh is refused, or the replay is refused too, is the session
+ * over. Nothing else, anywhere, handles a 401.
  */
-api.use({
-  onRequest({ request }) {
+export const authMiddleware = {
+  onRequest({ request, schemaPath }) {
     const token = getToken();
-    if (token !== null) request.headers.set("Authorization", `Bearer ${token}`);
+    if (token === null) return request;
+    request.headers.set("Authorization", `Bearer ${token}`);
+    if (!SESSION_ROUTES.has(schemaPath)) replays.set(request, request.clone());
     return request;
   },
-  onResponse({ response }) {
-    enforceSession(response);
-    return response;
+  async onResponse({ request, response, schemaPath, options }) {
+    // Whoever called a session route reads its answer: the sign-in form, `refreshSession`, sign-out.
+    if (SESSION_ROUTES.has(schemaPath)) return response;
+    const replay = replays.get(request);
+    replays.delete(request);
+    if (response.status !== 401 || replay === undefined) {
+      enforceSession(response);
+      return response;
+    }
+    // Another request may have refreshed while this one was in flight. Its token is the one to
+    // replay with; spending the cookie again would only rotate it for nothing.
+    const current = getToken();
+    const sent = request.headers.get("Authorization");
+    const token =
+      current !== null && sent !== `Bearer ${current}` ? current : await refreshSession();
+    if (token === null) {
+      endSession();
+      return response;
+    }
+    replay.headers.set("Authorization", `Bearer ${token}`);
+    const replayed = await options.fetch(replay);
+    enforceSession(replayed);
+    return replayed;
   },
-});
+} satisfies Middleware;
+
+api.use(authMiddleware);
 {% else -%}
 // Where a middleware goes when you need one — a bearer token, a correlation id, a 401 redirect:
 //

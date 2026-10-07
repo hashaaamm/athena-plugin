@@ -133,12 +133,14 @@ and it wins over `SERVICE_URL`.
 No server-side rendering, no data-fetching framework, no state-management library, and no
 component library beyond shadcn's primitives.
 {%- if cookiecutter.use_postgres == "yes" %}
-No refresh flow, no sign-out-everywhere, no roles, no password reset and no "remember me"
-either — the backend has none of them, and each one is a backend change before it is a component.
+No sign-out-everywhere button, no roles, no password reset and no "remember me" either — the
+backend has none of them, and each one is a backend change before it is a component. Sessions are
+here: the refresh token is an httpOnly cookie and the access token lives in memory, refreshed on a
+401 one request at a time — `AGENTS.md` says why each of those is the way it is.
 {%- else %}
 No sign-in flow, because this project has no database and therefore no user to sign in: generate
-with `use_postgres=yes` and the backend's four auth endpoints and this application's pages for
-them both arrive together.
+with `use_postgres=yes` and the backend's auth endpoints and this application's pages for them
+both arrive together.
 {%- endif %}
 Each of those is a decision with consequences; ask Athena for the relevant rules, decide once,
 and write it down in `AGENTS.md` when you add it.

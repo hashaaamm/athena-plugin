@@ -77,7 +77,7 @@ export function LoginPage() {
   return (
     <AuthCard
       title="Sign in"
-      description="Your session lasts fifteen minutes and ends when you close this tab."
+      description="You stay signed in on this browser until you sign out, or for thirty days without a visit."
       footer={registerLink}
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>

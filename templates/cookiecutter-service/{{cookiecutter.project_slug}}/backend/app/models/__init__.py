@@ -7,7 +7,8 @@ every new module under `app/models/` is imported here in the same change.
 """
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.refresh_session import RefreshSession
 from app.models.user import User
 
-__all__ = ["Base", "TimestampMixin", "UUIDMixin", "User"]
+__all__ = ["Base", "RefreshSession", "TimestampMixin", "UUIDMixin", "User"]
 {%- endif %}

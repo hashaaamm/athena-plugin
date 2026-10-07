@@ -29,54 +29,85 @@ in your summary that you added one.
 
 ## Authentication
 
-Four endpoints — `register`, `login`, `me`, `change-password` — and three decisions that were
-made once. Read this before touching `src/lib/auth.ts`, `src/lib/api/auth.ts` or the guard in
-`src/router.tsx`.
+Six endpoints — `register`, `login`, `refresh`, `logout`, `me`, `change-password` — and a handful
+of decisions that were made once. Read this before touching `src/lib/auth.ts`,
+`src/lib/api/client.ts`, `src/lib/api/auth.ts` or the guard in `src/router.tsx`.
 
-### The token lives in `sessionStorage`
+### Two credentials, two places
 
-**What that bought.** The session survives a page refresh. The access token lasts fifteen minutes
-and this backend has no refresh endpoint, so an in-memory-only token means F5 signs the user out
-— for a form half filled in, that is the difference between a demo and a product.
+**The refresh token is an httpOnly cookie.** The backend sets it on login, refresh and
+change-password — `HttpOnly`, `Secure`, `SameSite=Strict`, scoped to `/api/v1/auth` — and never
+puts it in a response body. No script in this page can read it: not ours, not an injected one. It
+lasts thirty days, is spent and replaced on every refresh, and a spent one coming back revokes the
+whole session on the server.
 
-**What it cost, plainly.** `sessionStorage` is **not** protected from cross-site scripting. Any
-script that executes in this page can read the token and use it until it expires, exactly as it
-could read `localStorage`. Choosing `sessionStorage` over `localStorage` did not buy XSS safety;
-it bought a smaller blast radius — the token is scoped to one tab, it is gone when that tab
-closes, and a second tab starts signed out. The visible cost is that last part: open a link in a
-new tab and you are not signed in there.
+**The access token lives in memory** — a module variable in `src/lib/auth.ts`, nothing else
+touches it, and it is in neither `sessionStorage` nor `localStorage`. A reload or a new tab starts
+without one, and the route guard gets a fresh one from the cookie before anything renders. It
+lasts fifteen minutes.
 
-**If you are holding data worth stealing, do it differently.** The shape that removes the XSS
-exposure is an httpOnly, `Secure`, `SameSite` cookie the browser attaches and JavaScript cannot
-read, with a short-lived access token kept in memory and a refresh endpoint to renew it — plus
-CSRF protection, because a cookie is sent on requests you did not initiate. That is backend work
-this template has not done; ask Athena for the JWT authentication guide, whose refresh-and-
-revocation step is where it starts. Do not simply move the token to `localStorage` and call it
-persistence — that is strictly more exposure for a convenience the fifteen-minute lifetime does
-not justify.
+**What that bought.** A stolen session can no longer be *carried off*: the long-lived credential is
+out of script's reach, and the one script can reach dies in fifteen minutes and with the page. A
+new tab is signed in, and a reload keeps you signed in.
+
+**What it did not buy.** Protection from cross-site scripting. Script running in this page can
+still use the session while the page is open — call the API, read the access token. The defence
+against XSS is a content security policy and not rendering untrusted HTML, not where a token is
+kept. Never move the access token into web storage to "fix" anything; nothing here needs it.
+
+**What the cookie costs: CSRF, and a same-site deployment.** A cookie rides along on requests
+other pages start. `refresh` and `logout` are the only routes that read it, and they require the
+`X-Requested-With` header and an allowlisted `Origin` — a third-party page cannot send the first
+without a CORS preflight the backend refuses. `credentials: "include"` is set on the four calls
+that send or receive the cookie (`SESSION_COOKIE` and `WITH_COOKIE` in `src/lib/api/client.ts`)
+and on nothing else. And `SameSite=Strict` needs the SPA and the API on one *site* —
+`app.example.com` and `api.example.com`, or `localhost:3000` and `localhost:8000`. Two `*.run.app`
+hostnames are two sites, so on the default Cloud Run URLs the browser drops the cookie: sign-in
+works, and a reload or the fifteen-minute mark signs you out. Map a domain — `infra/README.md` —
+rather than loosening `REFRESH_COOKIE_SAMESITE`.
 
 ### A 401 is handled once, in middleware
 
-`enforceSession` in `src/lib/auth.ts`, registered as `onResponse` middleware in
-`src/lib/api/client.ts`. It clears the token and hard-navigates to `/login` — a full document
-load, so the TanStack Query cache goes with the session rather than sitting in memory for the
-next person at the keyboard.
+`authMiddleware` in `src/lib/api/client.ts` is the only code that decides what a 401 means. For a
+request that carried an access token it is almost always "that token expired", so it refreshes and
+replays the request with the new token; the caller sees the replay's answer and never the 401.
+Only when the refresh is refused, or the replay is refused as well, is the session over —
+`endSession` in `src/lib/auth.ts` clears the token and hard-navigates to `/login`, a full document
+load, so the TanStack Query cache goes with the session rather than sitting in memory for the next
+person at the keyboard.
 
-Two guards make it safe, and both are tested: it does nothing when we held no token (a failed
-sign-in is not a lost session), and it does not redirect to `/login` from `/login` (that is the
-reload loop). **No component, hook or page handles a 401.** Adding one is how two behaviours
-appear for the same status.
+**One refresh at a time — this is a correctness rule.** A refresh token is single-use, so two
+refreshes sent with the same cookie look exactly like a replay to the backend, and it answers a
+replay by revoking the whole session. `refreshOnce` shares one in-flight refresh between every
+caller in the tab, and serialises across tabs with the Web Locks API, because the cookie is shared
+by all of them. Ten queries expiring together cost one refresh. Never call the refresh endpoint
+anywhere but through `refreshSession`.
+
+The guards that keep this safe are tested: a 401 from login, refresh or logout is an answer and is
+handed back untouched; a request sent with no token is not refreshed for; there is no redirect to
+`/login` from `/login` (that is the reload loop). **No component, hook or page handles a 401.**
+Adding one is how two behaviours appear for the same status.
 
 A **403 is not a 401** and must never be treated as one. `POST /auth/change-password` answers 403
 for a wrong current password precisely so the session survives and the form shows the error.
 
+### Signing out, and changing the password
+
+Sign-out calls `POST /auth/logout` — which revokes the session and clears the cookie — and then
+forgets the token and empties the query cache whatever the server said: a network failure must not
+leave a user looking at a session they asked to end. Changing the password signs out every other
+browser and device; the backend hands this one a new session, and `useChangePassword` stores the new
+access token.
+
 ### The whole shell is behind the guard
 
 `appRoute` in `src/router.tsx` — the pathless layout route that renders the sidebar — holds the
-`beforeLoad` check. Every page inside the application is under it, `/` included, so a visitor with
-no token never reaches a screen and never fires a query. `/login` and `/register` hang off the
-root instead, outside the shell: a sidebar of links to pages you cannot open is worse than no
-sidebar. Both bounce a caller who already holds a token, and signing in lands on `/`.
+`beforeLoad` check. With no access token in memory it asks the refresh cookie first, through the
+same single in-flight refresh, and redirects to `/login` only when that is refused. Every page
+inside the application is under it, `/` included, so a visitor with no session never reaches a
+screen and never fires a query. `/login` and `/register` hang off the root instead, outside the
+shell: a sidebar of links to pages you cannot open is worse than no sidebar. Both bounce a caller
+who already holds an access token, and signing in lands on `/`.
 
 A new page goes under `appRoute` and inherits the guard. A page that must be reachable signed out
 is a route on `rootRoute` with its own chrome, and it is a decision worth writing down.
@@ -100,8 +131,8 @@ address — that is the backend's deliberate choice, not an accident to copy int
 
 ### Out of scope, on purpose
 
-No refresh flow, no logout-everywhere, no roles, no password reset, no "remember me". The backend
-has none of them. Each one is a backend change first.
+No sign-out-everywhere button, no roles, no password reset, no "remember me". The backend has none
+of them. Each one is a backend change first.
 {%- endif %}
 
 ## Where a change goes
@@ -145,8 +176,10 @@ invocation in a script or a workflow.
 - Do not disable an ESLint rule, add `@ts-expect-error`, or cast to `any` to get to green.
   Surface the conflict instead.
 {%- if cookiecutter.use_postgres == "yes" %}
-- Do not handle a 401 anywhere but `enforceSession`, and do not read the token from anywhere but
-  `src/lib/auth.ts`.
+- Do not handle a 401 anywhere but `authMiddleware`, do not read the token from anywhere but
+  `src/lib/auth.ts`, and do not refresh except through `refreshSession`.
+- Do not put a token in `sessionStorage` or `localStorage`, and do not ask for the refresh token in
+  a response body. Both undo the reason the refresh token is a cookie.
 - Do not tell a user at sign-in whether an email address has an account.
 {%- endif %}
 - Do not edit `src/lib/api/schema.d.ts`.

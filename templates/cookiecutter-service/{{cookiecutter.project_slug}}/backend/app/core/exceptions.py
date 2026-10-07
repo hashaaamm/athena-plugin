@@ -35,6 +35,12 @@ class AppError(Exception):
     #: Response headers this error requires. Exactly one error needs them today and it is a
     #: protocol requirement, not a nicety — see `UnauthorizedError`.
     headers: ClassVar[dict[str, str] | None] = None
+{%- if cookiecutter.use_postgres == "yes" %}
+    #: Whether the writes the request made before this was raised are committed rather than rolled
+    #: back. False for every error but the one whose refusal *is* the write — see
+    #: `CompromisedSessionError`. Read by `request_transaction` in `app/core/database.py`.
+    keeps_writes: ClassVar[bool] = False
+{%- endif %}
 
     def __init__(self, message: str | None = None) -> None:
         self.message = message or self.default_message
@@ -71,6 +77,24 @@ class UnauthorizedError(AppError):
     # HTTP client that will not attempt re-authentication because nothing told it which scheme to
     # use. RFC 9110 requires the header on every 401.
     headers: ClassVar[dict[str, str] | None] = {"WWW-Authenticate": "Bearer"}
+{%- if cookiecutter.use_postgres == "yes" %}
+
+
+class CompromisedSessionError(UnauthorizedError):
+    """A refresh was refused *and* the session family it belonged to was revoked on the way out.
+
+    The one error whose writes are kept. Every other error rolls the request back, and that is
+    right for them; here the revocation is the point of the refusal. A rotated refresh token that
+    comes back is a replay or a stolen copy, and a rollback would undo the family revocation that
+    is the whole defence — the 401 would go out and every other token in the family would still
+    work.
+
+    The response is the same 401 as any other refused token, so a caller learns nothing about
+    which check failed.
+    """
+
+    keeps_writes = True
+{%- endif %}
 
 
 class ForbiddenError(AppError):

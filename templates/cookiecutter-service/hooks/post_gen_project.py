@@ -49,11 +49,15 @@ def main() -> None:
         # Adding it back later means creating the directory, not restructuring the repo.
         # Both its workflows and its CORS test go with it: a pipeline filtered on a path that does
         # not exist never runs and never says so, and CORS is only a question once a browser asks.
+        # So does the refresh cookie. With no browser client the refresh token travels in the JSON
+        # body, and a cookie transport nobody calls is CSRF surface with no user.
         _remove(
             "frontend",
             ".github/workflows/frontend-ci.yml",
             ".github/workflows/frontend-cd.yml",
             "backend/tests/test_cors.py",
+            "backend/app/api/refresh_cookie.py",
+            "backend/tests/test_refresh_cookie.py",
         )
 
     if not USE_SENTRY:
@@ -78,16 +82,23 @@ def main() -> None:
         # adding a dependency, and pretending otherwise is worse than leaving it open. Turning
         # `use_postgres` back on is a regeneration, and it brings all of this with it.
         _remove(
+            "backend/app/api/refresh_cookie.py",
             "backend/app/api/v1/auth.py",
             "backend/app/core/security",
+            "backend/app/models/refresh_session.py",
             "backend/app/models/user.py",
+            "backend/app/repositories/refresh_session_repository.py",
             "backend/app/repositories/user_repository.py",
             "backend/app/schemas/auth.py",
             "backend/app/services/auth_service.py",
             "backend/tests/helpers.py",
             "backend/tests/test_auth_api.py",
             "backend/tests/test_auth_service.py",
+            "backend/tests/test_migrations.py",
             "backend/tests/test_password_hashing.py",
+            "backend/tests/test_refresh_cookie.py",
+            "backend/tests/test_refresh_session_repository.py",
+            "backend/tests/test_sessions_api.py",
             "backend/tests/test_signing_key.py",
             "backend/tests/test_tokens.py",
         )

@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { clearToken, getToken } from "@/lib/auth";
-import { ApiError, api } from "./client";
-import { changePassword, fetchMe, registerAccount, requestToken } from "./auth";
+import { ApiError, SESSION_COOKIE, api } from "./client";
+import {
+  changePassword,
+  endServerSession,
+  fetchMe,
+  registerAccount,
+  requestToken,
+} from "./auth";
 
 const CREDENTIALS = { email: "ada@example.com", password: "correct-horse-battery" };
 
@@ -29,7 +35,6 @@ function failure(status: number, code: string, message: string) {
 afterEach(() => {
   vi.restoreAllMocks();
   clearToken();
-  window.sessionStorage.clear();
 });
 
 describe("registerAccount", () => {
@@ -64,6 +69,21 @@ describe("requestToken", () => {
     expect(getToken()).toBeNull();
   });
 
+  it("lets the browser keep the refresh cookie the answer sets", async () => {
+    // Cross-origin, a browser ignores a response's Set-Cookie unless the request asked for
+    // credentials. Without this the sign-in works and the first reload signs the user out.
+    const post = vi.spyOn(api, "POST").mockResolvedValue(
+      ok(200, { access_token: "a.b.c", token_type: "bearer", expires_in: 900 }) as never,
+    );
+
+    await requestToken(CREDENTIALS);
+
+    expect(post).toHaveBeenCalledWith("/api/v1/auth/login", {
+      body: CREDENTIALS,
+      credentials: "include",
+    });
+  });
+
   it("raises the 401 the backend answers to every bad credential alike", async () => {
     vi.spyOn(api, "POST").mockResolvedValue(
       failure(401, "unauthorized", "Invalid email or password") as never,
@@ -85,10 +105,16 @@ describe("fetchMe", () => {
 describe("changePassword", () => {
   const BODY = { current_password: "old-password-here", new_password: "new-password-here" };
 
-  it("treats the backend's 204 as success rather than a missing body", async () => {
-    vi.spyOn(api, "POST").mockResolvedValue(ok(204) as never);
+  it("returns the new session the backend starts, with the cookie it sets kept", async () => {
+    const post = vi.spyOn(api, "POST").mockResolvedValue(
+      ok(200, { access_token: "new.access.token", token_type: "bearer", expires_in: 900 }) as never,
+    );
 
-    await expect(changePassword(BODY)).resolves.toBeUndefined();
+    await expect(changePassword(BODY)).resolves.toMatchObject({ access_token: "new.access.token" });
+    expect(post).toHaveBeenCalledWith("/api/v1/auth/change-password", {
+      body: BODY,
+      credentials: "include",
+    });
   });
 
   it("carries the 403 through as a 403, so the form can show it on the field", async () => {
@@ -100,6 +126,19 @@ describe("changePassword", () => {
       status: 403,
       code: "forbidden",
       message: "Current password is incorrect",
+    });
+  });
+});
+
+describe("endServerSession", () => {
+  it("sends the refresh cookie and the CSRF header, and accepts the 204", async () => {
+    const post = vi.spyOn(api, "POST").mockResolvedValue(ok(204) as never);
+
+    await expect(endServerSession()).resolves.toBeUndefined();
+    expect(post).toHaveBeenCalledWith("/api/v1/auth/logout", SESSION_COOKIE);
+    expect(SESSION_COOKIE).toMatchObject({
+      credentials: "include",
+      headers: { "X-Requested-With": "fetch" },
     });
   });
 });

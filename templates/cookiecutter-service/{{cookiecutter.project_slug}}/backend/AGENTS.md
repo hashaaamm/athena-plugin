@@ -37,16 +37,33 @@ which fails on a violation — the contracts are in `.importlinter`.
 {% if cookiecutter.use_postgres == "yes" -%}
 **Authentication is the worked example, and it runs through all four layers.**
 `app/api/v1/auth.py` binds input and calls one method on `AuthService`; the service owns every
-rule about passwords and enumeration and hands back a Pydantic schema; `UserRepository` owns every
-query; `app/models/user.py` is the table. Read it before you write the second resource, because it
-is the shape the second one takes. It is also a real feature rather than a placeholder — four
-endpoints, `register`, `login`, `me` and `change-password` — so nothing about it is waiting to be
-deleted.
+rule about passwords, enumeration and sessions and hands back a Pydantic schema; `UserRepository`
+and `RefreshSessionRepository` own every query; `app/models/user.py` and
+`app/models/refresh_session.py` are the tables. Read it before you write the second resource,
+because it is the shape the second one takes. It is also a real feature rather than a placeholder —
+six endpoints, `register`, `login`, `refresh`, `logout`, `me` and `change-password` — so nothing
+about it is waiting to be deleted.
 
-What it deliberately leaves out, so you do not assume it is there: no refresh tokens, no logout,
-no revocation, no roles or permission guards, no password reset, no email verification. An access
-token is good until it expires and nothing can take it back. Ask Athena for the JWT authentication
-guide before adding any of them; each is a step of it, and the revocation half needs a table.
+**Sessions.** Login returns an access token (fifteen minutes) and a refresh token (thirty days,
+single-use). Each refresh revokes the token it spent and issues the next one in the same family,
+with the row locked `FOR UPDATE`; a spent token presented again revokes the whole family.
+Logout revokes the family and never fails. Changing a password revokes every family and gives the
+caller a new one. The refresh token is refused as a bearer token. {% if cookiecutter.include_frontend == "yes" %}With the web client it travels as an
+httpOnly cookie, set and read only by `app/api/refresh_cookie.py`, never in a body, with a CSRF check
+on the two routes that read it.{% else %}It travels in the JSON body; there is no browser client and so no cookie.{% endif %}
+
+**Two rules this leans on.** A refused request rolls back its writes, except a
+`CompromisedSessionError`, whose family revocation is the point of the refusal — use that error, or
+the revocation silently disappears with the 401. And revocation latency is fifteen minutes:
+revoking a session stops new access tokens at once, and the access token already issued keeps
+working until it expires. That is the documented trade for not reading the database on every
+request; deactivating a user is the same sentence.
+
+What it deliberately leaves out, so you do not assume it is there: no roles or permission guards,
+no ownership checks, no password reset, no email verification, and no scheduled job deleting
+expired `refresh_sessions` rows — add one before the table matters, never on the refresh path. Ask
+Athena for the JWT authentication guide before adding any of them; roles and ownership are its last
+two steps.
 {%- else -%}
 The only endpoints shipped are the health probes, so read the layering as a rule rather than as
 something the code demonstrates end to end. With no database there is no repository and no model:
@@ -76,7 +93,7 @@ has no tables at all. The first resource you add is what makes the rest of it re
 
 ## Where to start when adding a resource
 
-{% if cookiecutter.use_postgres == "yes" %}Read the auth resource end to end first — it is five files and it is all of them. Then write the
+{% if cookiecutter.use_postgres == "yes" %}Read the auth resource end to end first — one file in each of the five places below. Then write the
 same five for yours, in this order, and skip none of them:
 
 1. `app/models/<x>.py` — the table. Inherits `Base`, `UUIDMixin`, `TimestampMixin`, and is
@@ -94,9 +111,9 @@ same five for yours, in this order, and skip none of them:
 Then `just db-revision "create <x>"`, check the generated migration by eye, and write the tests:
 the service's rules directly, the router through the HTTP client.
 
-Development data does not ship: `just db-seed` and `app/seed.py` are gone, because the only table
-here is `users` and a seeded account with a password printed in a repository is a back door in
-every project generated from this template. Bring them back with your first real resource —
+Development data does not ship: `just db-seed` and `app/seed.py` are gone, because the only tables
+here are accounts and their sessions, and a seeded account with a password printed in a repository
+is a back door in every project generated from this template. Bring them back with your first real resource —
 `app/seed.py` as an entry point that opens a session and calls one service method, no domain logic
 and no shortcut around the service, plus a `db-seed` recipe in `backend/justfile` and a delegation
 line in the root one. Seed the awkward cases, not just a happy row.{% else %}There is no example resource to copy — with no database the template ships the health endpoints

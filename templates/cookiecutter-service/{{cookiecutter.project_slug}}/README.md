@@ -61,12 +61,14 @@ has its own toolchain and its own workflow.
 
 ## The backend, in one paragraph
 
-{% if cookiecutter.use_postgres == "yes" %}It answers `/health/live`, `/health/ready`, and four authentication endpoints:
-`POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/me` and
-`POST /api/v1/auth/change-password`. Those four are a real feature and the worked example of the
-layering at the same time — router, service, repository, model, in five files you can read in ten
-minutes. What they are not is complete: there are no refresh tokens, no logout, no revocation and
-no roles. `backend/AGENTS.md` says what that costs you and where to read next.{% else %}The endpoints it answers today are `/health/live` and `/health/ready`, and nothing else. With no
+{% if cookiecutter.use_postgres == "yes" %}It answers `/health/live`, `/health/ready`, and six authentication endpoints:
+`POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`,
+`POST /api/v1/auth/logout`, `GET /api/v1/auth/me` and `POST /api/v1/auth/change-password`. They are
+a real feature and the worked example of the layering at the same time — router, service,
+repository, model. Sessions are complete: refresh tokens rotate on every use, a reused one revokes
+its whole session, logout and a password change end sessions for real. Authorization is not: there
+are no roles and no ownership checks. `backend/AGENTS.md` says what that costs you and where to read
+next.{% else %}The endpoints it answers today are `/health/live` and `/health/ready`, and nothing else. With no
 database there is nothing to authenticate against either. There is no example resource to
 rename — `backend/AGENTS.md` lists the three files the first one takes.{% endif %}
 

@@ -16,6 +16,7 @@ import { DashboardPage } from "@/routes/dashboard";
 import { AccountPage } from "@/routes/account";
 import { LoginPage } from "@/routes/login";
 import { RegisterPage } from "@/routes/register";
+import { refreshSession } from "@/lib/api/client";
 import { getToken, LOGIN_PATH } from "@/lib/auth";
 {%- endif %}
 
@@ -40,6 +41,11 @@ const rootRoute = createRootRoute({ component: () => <Outlet /> });
  * `beforeLoad` runs before the component mounts, so an unauthenticated visitor never renders a
  * flash of a page they are not allowed to see, and the queries on that page never fire.
  *
+ * The access token lives in memory, so after a reload, or in a new tab, there is none — and that
+ * is not the same as being signed out. The guard asks the refresh cookie first, through the same
+ * single in-flight refresh everything else uses, and sends the visitor to sign in only when that
+ * is refused.
+ *
  * This is a UX boundary and not a security one. The bundle is static files served to anyone who
  * asks; what keeps data private is the backend answering 401 without a valid bearer token. Ask
  * Athena about authentication in the browser before you reason about either.
@@ -58,8 +64,10 @@ const appRoute = createRoute({
   id: "app",
   component: AppShell,
 {%- if cookiecutter.use_postgres == "yes" %}
-  beforeLoad: () => {
-    if (getToken() === null) throw redirect({ to: LOGIN_PATH });
+  beforeLoad: async () => {
+    if (getToken() === null && (await refreshSession()) === null) {
+      throw redirect({ to: LOGIN_PATH });
+    }
   },
 {%- endif %}
 });

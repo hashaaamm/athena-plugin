@@ -36,7 +36,6 @@ async function signIn(password = PASSWORD) {
 afterEach(() => {
   vi.restoreAllMocks();
   clearToken();
-  window.sessionStorage.clear();
 });
 
 describe("signing in", () => {

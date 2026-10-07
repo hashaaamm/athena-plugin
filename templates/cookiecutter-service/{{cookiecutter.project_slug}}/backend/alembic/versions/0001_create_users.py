@@ -4,8 +4,8 @@ Revision ID: 0001
 Revises:
 Create Date: generated with the template
 
-The only table the template ships, and the root of this project's history. Every later revision
-hangs off it, so `alembic revision --autogenerate` writes a child rather than a second head.
+The accounts table, and the root of this project's history. Every later revision hangs off it, so
+`alembic revision --autogenerate` writes a child rather than a second head.
 
 Do not delete it to "start clean". A revision that has run against a database somewhere is part of
 that database's history; dropping it from the repository makes `alembic current` point at a

@@ -17,7 +17,13 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.exceptions import UnauthorizedError
-from app.core.security.tokens import ALGORITHM, TokenType, decode_token, issue_access_token
+from app.core.security.tokens import (
+    ALGORITHM,
+    TokenType,
+    decode_token,
+    issue_access_token,
+    issue_refresh_token,
+)
 
 
 def _sign(claims: dict[str, Any], *, algorithm: str = ALGORITHM) -> str:
@@ -50,6 +56,44 @@ def test_a_minted_token_round_trips_and_says_how_long_it_lives() -> None:
     assert claims.typ == TokenType.ACCESS.value
     assert expires_in == get_settings().access_token_ttl_seconds
     assert claims.exp - claims.iat == get_settings().access_token_ttl_seconds
+
+
+def test_a_refresh_token_round_trips_and_names_its_row() -> None:
+    """Same encoder, `typ=refresh`, the longer lifetime, and the `jti` its row is keyed by."""
+    user_id = uuid.uuid4()
+
+    issued = issue_refresh_token(user_id=user_id)
+    claims = decode_token(issued.token, expected=TokenType.REFRESH)
+
+    assert claims.sub == user_id
+    assert claims.jti == issued.jti
+    assert claims.exp - claims.iat == get_settings().refresh_token_ttl_days * 24 * 60 * 60
+    assert claims.exp == int(issued.expires_at.timestamp())
+
+
+def test_a_minted_refresh_token_is_not_an_access_token() -> None:
+    """The crafted-claims case below proves the comparison; this proves the encoder sets `typ` on
+    the real thing, so a refresh token cannot open a guarded route."""
+    issued = issue_refresh_token(user_id=uuid.uuid4())
+
+    with pytest.raises(UnauthorizedError):
+        decode_token(issued.token, expected=TokenType.ACCESS)
+
+
+def test_an_access_token_is_not_a_refresh_token() -> None:
+    token, _ = issue_access_token(user_id=uuid.uuid4())
+
+    with pytest.raises(UnauthorizedError):
+        decode_token(token, expected=TokenType.REFRESH)
+
+
+def test_an_expired_refresh_token_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFRESH_TOKEN_TTL_DAYS", "-1")
+    get_settings.cache_clear()
+    issued = issue_refresh_token(user_id=uuid.uuid4())
+
+    with pytest.raises(UnauthorizedError):
+        decode_token(issued.token, expected=TokenType.REFRESH)
 
 
 def test_a_tampered_signature_is_refused() -> None:

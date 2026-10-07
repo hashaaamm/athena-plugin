@@ -270,6 +270,9 @@ Manual, and no template can change that:
 | Confirming `just infra-teardown`, and the KMS commands it leaves for 30 days' time | Deleting a state bucket is irreversible, and KMS will not go faster |
 {%- if cookiecutter.include_frontend == "yes" %}
 | `FRONTEND_API_URL`, once the API answers on that domain | The same decision, one variable later — it overrides `SERVICE_URL` |
+{%- if cookiecutter.use_postgres == "yes" %}
+| The SPA and the API on one site — say `app.example.com` and `api.example.com` | The refresh token is a `SameSite=Strict` cookie, and `run.app` is a public suffix, so the two default Cloud Run URLs are two sites and the browser drops the cookie. Until both answer under a name you own, signing in works and a reload — or fifteen minutes — signs the user out. `frontend/AGENTS.md` has the detail |
+{%- endif %}
 {%- endif %}
 | Branch protection on `main`, and requiring CI to merge | A GitHub setting, not a file |
 

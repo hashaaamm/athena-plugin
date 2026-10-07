@@ -39,12 +39,15 @@ async function changePassword(current = CURRENT) {
 afterEach(() => {
   vi.restoreAllMocks();
   clearToken();
-  window.sessionStorage.clear();
 });
 
 describe("the account route", () => {
-  it("sends a visitor with no token to sign in, without rendering the page first", async () => {
+  it("sends a visitor with no session to sign in, without rendering the page first", async () => {
     const get = vi.spyOn(api, "GET");
+    // No refresh cookie either: the guard's attempt to restore a session is refused.
+    vi.spyOn(api, "POST").mockResolvedValue(
+      answer(401, { error: { code: "unauthorized", message: "No session" } }) as never,
+    );
 
     await renderAt("/account");
 
@@ -76,10 +79,18 @@ describe("the account route", () => {
 });
 
 describe("changing the password", () => {
-  it("clears the form once the backend has answered 204", async () => {
+  it("clears the form and carries on in the new session the backend starts", async () => {
+    // The backend ends every session the account has and hands this browser a new one. Keeping
+    // the old access token would work for at most fifteen minutes and then sign the user out.
     setToken("header.payload.signature");
     meReturns(200, USER);
-    const post = vi.spyOn(api, "POST").mockResolvedValue(answer(204) as never);
+    const post = vi.spyOn(api, "POST").mockResolvedValue(
+      answer(200, {
+        access_token: "new.session.token",
+        token_type: "bearer",
+        expires_in: 900,
+      }) as never,
+    );
     await renderAt("/account");
     await screen.findByText(EMAIL);
 
@@ -87,8 +98,10 @@ describe("changing the password", () => {
 
     expect(post).toHaveBeenCalledWith("/api/v1/auth/change-password", {
       body: { current_password: CURRENT, new_password: NEXT },
+      credentials: "include",
     });
     expect(await screen.findByLabelText("Current password")).toHaveValue("");
+    expect(getToken()).toBe("new.session.token");
   });
 
   it("shows a wrong current password on the field, and keeps the session", async () => {

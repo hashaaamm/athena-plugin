@@ -36,7 +36,6 @@ async function fillIn(password = PASSWORD) {
 afterEach(() => {
   vi.restoreAllMocks();
   clearToken();
-  window.sessionStorage.clear();
 });
 
 describe("registering", () => {

@@ -20,7 +20,8 @@ from fastapi import APIRouter, Depends
 from app.api.v1 import auth
 from app.core.security.actor import get_current_actor
 
-#: No credential required. Today: registering, and logging in. Both are how a caller gets one.
+#: No bearer token required. Today: register, login, refresh and logout — the first two are how a
+#: caller gets a credential, and the last two take a refresh token, which is never a bearer one.
 public = APIRouter()
 public.include_router(auth.public_router)
 

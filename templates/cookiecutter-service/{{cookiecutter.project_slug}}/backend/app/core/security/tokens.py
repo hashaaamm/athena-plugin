@@ -1,4 +1,10 @@
-"""Minting and verifying access tokens. PyJWT, HS256, one encoder and one decoder.
+"""Minting and verifying tokens. PyJWT, HS256, one encoder and one decoder.
+
+Two kinds of token come out of the one encoder, told apart by the `typ` claim. An access token is
+the bearer credential: fifteen minutes, checked against nothing but its signature. A refresh token
+is the credential that mints the next pair: thirty days, no permissions in it, and good only at
+`POST /auth/refresh` and only while its row in `refresh_sessions` says so. The decoder takes the
+kind it expects as an argument, which is what stops one being spent as the other.
 
 PyJWT signs and verifies JWTs and does nothing else, which is why it is the approved default: no
 JWE, no key sets, no JOSE surface nothing here uses. Ask Athena which auth libraries are approved
@@ -15,7 +21,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
 
 import jwt
 from pydantic import BaseModel, ConfigDict
@@ -55,12 +61,13 @@ def require_signing_key(settings: Settings) -> None:
 class TokenType(StrEnum):
     """What a token is for. Carried as `typ` and compared on every decode.
 
-    One member today. It is here anyway: the day a refresh token is added, `typ` is what stops a
-    long-lived refresh credential being presented as a bearer token on every guarded route — and a
-    claim added later invalidates every token already in flight.
+    The comparison is what stops a thirty-day refresh token being presented as a bearer token on
+    every guarded route. Both kinds are signed with the same key and carry the same claims, so
+    nothing else in the decoder tells them apart.
     """
 
     ACCESS = "access"
+    REFRESH = "refresh"
 
 
 class TokenClaims(BaseModel):
@@ -79,12 +86,34 @@ class TokenClaims(BaseModel):
     exp: int
 
 
+class IssuedRefreshToken(NamedTuple):
+    """A minted refresh token, and what its `refresh_sessions` row has to record about it."""
+
+    token: str
+    #: The token's `jti`, which is the row's primary key. The token itself is never stored.
+    jti: uuid.UUID
+    #: The token's `exp`, from the same clock read, so the row cannot outlive the token.
+    expires_at: dt.datetime
+
+
 def issue_access_token(*, user_id: uuid.UUID) -> tuple[str, int]:
     """Mint an access token. Returns the token and its lifetime in seconds."""
     settings = get_settings()
     ttl = dt.timedelta(seconds=settings.access_token_ttl_seconds)
-    token = _encode({"sub": str(user_id), "typ": TokenType.ACCESS.value}, ttl)
+    token, _, _ = _encode({"sub": str(user_id), "typ": TokenType.ACCESS.value}, ttl)
     return token, settings.access_token_ttl_seconds
+
+
+def issue_refresh_token(*, user_id: uuid.UUID) -> IssuedRefreshToken:
+    """Mint a refresh token: the same encoder, `typ=refresh`, and the longer lifetime.
+
+    It carries no permissions. It is never a bearer credential — `get_current_actor` refuses it —
+    so the only thing it can say is who it was issued to, and the row named by its `jti` says
+    whether that is still true.
+    """
+    ttl = dt.timedelta(days=get_settings().refresh_token_ttl_days)
+    token, jti, expires_at = _encode({"sub": str(user_id), "typ": TokenType.REFRESH.value}, ttl)
+    return IssuedRefreshToken(token=token, jti=jti, expires_at=expires_at)
 
 
 def decode_token(token: str, *, expected: TokenType) -> TokenClaims:
@@ -127,17 +156,22 @@ def decode_token(token: str, *, expected: TokenType) -> TokenClaims:
         raise UnauthorizedError("Invalid or expired token") from exc
 
 
-def _encode(claims: dict[str, Any], ttl: dt.timedelta) -> str:
+def _encode(claims: dict[str, Any], ttl: dt.timedelta) -> tuple[str, uuid.UUID, dt.datetime]:
+    """Sign a token. Returns it with its `jti` and its expiry, which a refresh token's row needs."""
     settings = get_settings()
     now = dt.datetime.now(tz=dt.UTC)
+    # Unique per token. A refresh token's is the key of its `refresh_sessions` row, which is how
+    # a token is found again without being stored. Nothing revokes an access token — it lives
+    # fifteen minutes — but a token that cannot be named cannot be denied later either.
+    jti = uuid.uuid4()
+    expires_at = now + ttl
     payload = {
         **claims,
         "iss": settings.jwt_issuer,
         "aud": settings.jwt_audience,
         "iat": now,
-        "exp": now + ttl,
-        # Unique per token. Nothing revokes an access token today — it lives fifteen minutes —
-        # but a token that cannot be named cannot be denied later either.
-        "jti": str(uuid.uuid4()),
+        "exp": expires_at,
+        "jti": str(jti),
     }
-    return jwt.encode(payload, settings.jwt_secret.get_secret_value(), algorithm=ALGORITHM)
+    token = jwt.encode(payload, settings.jwt_secret.get_secret_value(), algorithm=ALGORITHM)
+    return token, jti, expires_at

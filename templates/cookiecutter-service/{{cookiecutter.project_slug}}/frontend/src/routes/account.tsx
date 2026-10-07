@@ -112,9 +112,8 @@ function ChangePasswordForm() {
       </div>
 
       <p className="text-[12px] leading-relaxed text-faint">
-        Your current sign-in keeps working. This backend issues no refresh tokens and stores no
-        sessions, so a password change cannot end one that is already open — ask Athena for the
-        JWT authentication guide, where revocation is a step with a table behind it.
+        Changing it signs out every other browser and device on this account. This one stays signed
+        in with a new session.
       </p>
     </form>
   );
@@ -138,7 +137,7 @@ export function AccountPage() {
   const navigate = useNavigate();
 
   async function onSignOut() {
-    signOut();
+    await signOut();
     await navigate({ to: "/login" });
   }
 

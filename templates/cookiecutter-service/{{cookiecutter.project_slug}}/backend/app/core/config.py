@@ -83,8 +83,26 @@ class Settings(BaseSettings):
     jwt_issuer: str = "{{ cookiecutter.project_slug }}"
     jwt_audience: str = "{{ cookiecutter.project_slug }}"
     #: Fifteen minutes. Nothing checks an access token against the database, so this number is
-    #: also the revocation latency: a deactivated account keeps working until its token expires.
+    #: also the revocation latency: revoking a session stops new access tokens at once, and the
+    #: one already issued keeps working until it expires. Deactivating a user is the same sentence.
     access_token_ttl_seconds: int = 900
+    #: How long a refresh token, and the `refresh_sessions` row behind it, stays usable. Every
+    #: refresh replaces it with a new one, so this is the longest a client can go without calling
+    #: the API before it has to sign in again — not how long a session can last.
+    refresh_token_ttl_days: int = 30
+{%- if cookiecutter.include_frontend == "yes" %}
+    #: The refresh cookie's `Secure` attribute. True everywhere it matters, and refused as false
+    #: anywhere deployed: without it the browser sends the cookie over plain HTTP. Local development
+    #: serves the API on `http://localhost`, which is why `.env.example` turns it off there.
+    refresh_cookie_secure: bool = True
+    #: The refresh cookie's `SameSite` attribute. `strict` keeps it off every request a third-party
+    #: page starts. It also needs the SPA and the API on the same *site* — `app.example.com` and
+    #: `api.example.com` are; two `*.run.app` hostnames are not, because `run.app` is a public
+    #: suffix. `none` is the cross-site setting: the browser then attaches the cookie wherever it
+    #: allows third-party cookies at all, and only the CSRF check in `app/api/refresh_cookie.py`
+    #: stands between it and a forged request.
+    refresh_cookie_samesite: Literal["strict", "lax", "none"] = "strict"
+{%- endif %}
 {% endif %}{% if cookiecutter.use_sentry == "yes" %}
     # --- Observability ---------------------------------------------------
     #: Empty means no error tracking. That MUST be the local default —
@@ -135,6 +153,21 @@ class Settings(BaseSettings):
         # `require_signing_key`, which `create_app` calls — so a deployed *server* still refuses to
         # start with the sentinel, which is the failure that matters.
         return self
+{%- if cookiecutter.include_frontend == "yes" %}
+
+    @model_validator(mode="after")
+    def _refuse_an_unprotected_refresh_cookie(self) -> Self:
+        """A refresh cookie without `Secure` is a thirty-day credential on plain HTTP.
+
+        Browsers drop `SameSite=None` without `Secure` silently, so that pair is refused everywhere
+        rather than shipped as a sign-in that mysteriously never persists.
+        """
+        if self.refresh_cookie_samesite == "none" and not self.refresh_cookie_secure:
+            raise ValueError("REFRESH_COOKIE_SAMESITE=none requires REFRESH_COOKIE_SECURE=true")
+        if self.is_deployed and not self.refresh_cookie_secure:
+            raise ValueError("REFRESH_COOKIE_SECURE must be true outside local and test")
+        return self
+{%- endif %}
 {% endif %}
 
 @lru_cache

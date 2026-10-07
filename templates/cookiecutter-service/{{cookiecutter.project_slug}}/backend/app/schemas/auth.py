@@ -87,11 +87,61 @@ class UserRead(BaseModel):
     updated_at: dt.datetime
 
 
+{%- if cookiecutter.include_frontend == "no" %}
+
+
+class RefreshRequest(BaseModel):
+    """Spend a refresh token for a new pair."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: `SecretStr` for the reason the password is: a stray `model_dump()` in a log line must not
+    #: print a credential that mints access tokens for thirty days.
+    refresh_token: SecretStr = Field(
+        description="The refresh token from the last login or refresh. Spent by this call."
+    )
+
+
+class LogoutRequest(BaseModel):
+    """End the session a refresh token belongs to."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    refresh_token: SecretStr = Field(
+        description="Any refresh token from the session to end. Its whole family is revoked."
+    )
+{%- endif %}
+
+
+class TokenPairRead(BaseModel):
+    """A new session, or the next step of one: an access token and the refresh token behind it.
+
+    What login, refresh and change-password return. The refresh token in it is single-use —
+    spending it at `POST /auth/refresh` revokes it and returns the next pair, and presenting it a
+    second time revokes every token descended from the same sign-in.
+    """
+
+    access_token: str = Field(description="Bearer credential: `Authorization: Bearer <token>`.")
+    refresh_token: str = Field(description="Single-use. Spend it at `POST /api/v1/auth/refresh`.")
+    #: The scheme the caller must send the access token back under.
+    token_type: Literal["bearer"] = "bearer"  # noqa: S105 - a scheme name, not a credential
+    #: Sent even though the client could read `exp` out of the token, because a client that has to
+    #: decode a JWT to know when to refresh is a client that will decode it without verifying it.
+    expires_in: int = Field(description="Seconds until the access token expires.", examples=[900])
+{%- if cookiecutter.include_frontend == "yes" %}
+
+
 class AccessTokenRead(BaseModel):
-    access_token: str
+    """What the browser receives: the access token, and not the refresh token.
+
+    The refresh token travels as an httpOnly cookie instead — see `app/api/refresh_cookie.py` — so
+    no script running in the page can read it. Putting it in this body as well would undo that.
+    """
+
+    access_token: str = Field(description="Bearer credential: `Authorization: Bearer <token>`.")
     #: The scheme the caller must send it back under: `Authorization: Bearer <token>`.
     token_type: Literal["bearer"] = "bearer"  # noqa: S105 - a scheme name, not a credential
     #: Sent even though the client could read `exp` out of the token, because a client that has to
-    #: decode a JWT to know when to re-authenticate is a client that will decode it without
-    #: verifying it.
-    expires_in: int
+    #: decode a JWT to know when to refresh is a client that will decode it without verifying it.
+    expires_in: int = Field(description="Seconds until the access token expires.", examples=[900])
+{%- endif %}

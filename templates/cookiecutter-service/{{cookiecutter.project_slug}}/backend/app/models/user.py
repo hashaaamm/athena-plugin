@@ -1,4 +1,4 @@
-"""A person who can sign in. The only table this template ships.
+"""A person who can sign in. Their sessions are rows in `refresh_sessions`, which cascade with them.
 
 Two things it deliberately does not have:
 

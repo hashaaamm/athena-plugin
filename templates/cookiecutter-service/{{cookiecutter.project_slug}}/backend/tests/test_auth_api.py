@@ -218,7 +218,7 @@ async def test_changing_a_password_retires_the_old_one(client: AsyncClient) -> N
         json={"current_password": payload["password"], "new_password": NEW_PASSWORD},
     )
 
-    assert changed.status_code == 204
+    assert changed.status_code == 200
     with_old = await client.post(
         "/api/v1/auth/login", json={"email": payload["email"], "password": payload["password"]}
     )

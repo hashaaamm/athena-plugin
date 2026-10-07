@@ -8,6 +8,11 @@ Two details here are load-bearing, and both fail silently when they are wrong:
 2. The URL is read from `config.attributes` first, and only then from Settings. Hard-coding it from
    Settings means a caller — the test suite, a one-off migration against a copy — cannot inject
    one, and there is no way to find that out except by reading this file.
+
+A caller may also hand over an open connection as `config.attributes["connection"]`, and then the
+migrations run on it, inside whatever transaction it already holds. That is how
+`tests/test_migrations.py` runs every revision up and down in a schema of its own and rolls the
+lot back — the suite never touches a database it did not create.
 """
 
 from __future__ import annotations
@@ -68,5 +73,8 @@ async def run_migrations_online() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
+elif isinstance(shared := config.attributes.get("connection"), Connection):
+    # Already inside the caller's event loop and transaction: no engine, no `asyncio.run`.
+    _run_migrations(shared)
 else:
     asyncio.run(run_migrations_online())

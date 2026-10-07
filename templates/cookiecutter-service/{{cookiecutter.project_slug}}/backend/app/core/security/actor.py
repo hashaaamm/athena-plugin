@@ -48,6 +48,7 @@ async def get_current_actor(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise UnauthorizedError("Authentication required")
     # `credentials.credentials` is the token alone. Passing the whole header here is the mistake
-    # that produces "Not enough segments" from the decoder.
+    # that produces "Not enough segments" from the decoder. `expected=ACCESS` is what refuses a
+    # refresh token presented here: same key, same claims, thirty days instead of fifteen minutes.
     claims = decode_token(credentials.credentials, expected=TokenType.ACCESS)
     return Actor(id=claims.sub)

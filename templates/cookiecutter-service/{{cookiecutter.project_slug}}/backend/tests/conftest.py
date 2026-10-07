@@ -26,9 +26,11 @@ from __future__ import annotations
 {% if cookiecutter.use_postgres == "yes" -%}
 import asyncio
 import os
-{% endif -%}
 from collections.abc import AsyncIterator, Iterator
-
+from contextlib import asynccontextmanager
+{% else -%}
+from collections.abc import AsyncIterator, Iterator
+{% endif %}
 import pytest
 from httpx import ASGITransport, AsyncClient
 {%- if cookiecutter.use_postgres == "yes" %}
@@ -39,11 +41,12 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
 {%- if cookiecutter.use_postgres == "yes" %}
-from app.core.database import get_db_session
+from app.core.database import get_db_session, request_transaction
 {%- endif %}
 from app.main import create_app
 {%- if cookiecutter.use_postgres == "yes" %}
 from app.models import Base
+from tests.helpers import ClientFactory
 {%- endif %}
 
 
@@ -135,23 +138,41 @@ async def session(settings: Settings, _schema_ready: str) -> AsyncIterator[Async
 
 
 @pytest.fixture
-async def client(settings: Settings, session: AsyncSession) -> AsyncIterator[AsyncClient]:
-    """An HTTP client bound to this test's transaction.
+def client_for(session: AsyncSession) -> ClientFactory:
+    """HTTP clients over an app built from the given settings, bound to this test's transaction.
 
-    The override is on the session dependency, which is the single seam
-    the project structure rules intend — patching internals would couple the tests to
-    the wiring instead of the contract.
+    The override is on the session dependency, which is the single seam the project structure
+    rules intend — patching internals would couple the tests to the wiring instead of the contract.
+    It wraps the session in the application's own `request_transaction`, so an error rolls a
+    request's writes back here exactly as it does in production — to a savepoint, which teardown
+    then discards with everything else — and the one error that keeps its writes keeps them.
     """
-    app = create_app(settings)
 
-    async def _session_override() -> AsyncIterator[AsyncSession]:
-        yield session
+    @asynccontextmanager
+    async def _client(app_settings: Settings) -> AsyncIterator[AsyncClient]:
+        app = create_app(app_settings)
 
-    app.dependency_overrides[get_db_session] = _session_override
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+        async def _session_override() -> AsyncIterator[AsyncSession]:
+            async with request_transaction(session):
+                yield session
+
+        app.dependency_overrides[get_db_session] = _session_override
+        # A route reading `SettingsDep` sees the settings this app was built from, not whatever
+        # `get_settings()` would load from the environment.
+        app.dependency_overrides[get_settings] = lambda: app_settings
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+            yield http_client
+        app.dependency_overrides.clear()
+
+    return _client
+
+
+@pytest.fixture
+async def client(settings: Settings, client_for: ClientFactory) -> AsyncIterator[AsyncClient]:
+    """An HTTP client over the default test app, bound to this test's transaction."""
+    async with client_for(settings) as http_client:
         yield http_client
-    app.dependency_overrides.clear()
 {%- else %}
 
 @pytest.fixture

@@ -23,6 +23,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
 from app.core.security.actor import Actor, get_current_actor
 from app.repositories.health_repository import HealthRepository
+from app.repositories.refresh_session_repository import RefreshSessionRepository
 from app.repositories.user_repository import UserRepository
 {%- endif %}
 {%- if cookiecutter.use_postgres == "yes" %}
@@ -64,10 +65,15 @@ def get_user_repository(session: SessionDep) -> UserRepository:
     return UserRepository(session)
 
 
+def get_refresh_session_repository(session: SessionDep) -> RefreshSessionRepository:
+    return RefreshSessionRepository(session)
+
+
 def get_auth_service(
-    repository: Annotated[UserRepository, Depends(get_user_repository)],
+    users: Annotated[UserRepository, Depends(get_user_repository)],
+    sessions: Annotated[RefreshSessionRepository, Depends(get_refresh_session_repository)],
 ) -> AuthService:
-    return AuthService(repository)
+    return AuthService(users, sessions)
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]

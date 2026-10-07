@@ -60,7 +60,7 @@ export function AppShell() {
   const navigate = useNavigate();
 
   async function onSignOut() {
-    signOut();
+    await signOut();
     await navigate({ to: "/login" });
   }
 {% endif %}

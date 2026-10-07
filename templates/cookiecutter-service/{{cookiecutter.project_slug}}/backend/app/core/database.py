@@ -7,6 +7,7 @@ Ask Athena for the layered architecture rules; AGENTS.md rule 5 says the same th
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
+from app.core.exceptions import AppError
 
 
 def create_engine(settings: Settings | None = None) -> AsyncEngine:
@@ -73,18 +75,38 @@ async def dispose_engine() -> None:
     _session_factory = None
 
 
-async def get_db_session() -> AsyncIterator[AsyncSession]:
-    """One transaction per request. The only place that commits.
+@asynccontextmanager
+async def request_transaction(session: AsyncSession) -> AsyncIterator[AsyncSession]:
+    """Commit or roll back one request's work. The only code in the service that decides which.
 
-    Commit lives here rather than in a repository so a failure late in a use case undoes the
-    writes that came earlier in it, and so the test harness can wrap each test in an outer
-    transaction it rolls back.
+    Success commits. An error rolls back, so a failure late in a use case undoes the writes that
+    came earlier in it — except an `AppError` that declares `keeps_writes`, whose writes are the
+    outcome the error reports. FastAPI throws a route's exception into the dependency that yielded
+    the session, which is what lets this see it at all.
+
+    Separate from `get_db_session` so the test suite can wrap its own session in the same decision
+    rather than a copy of it.
     """
-    async with get_session_factory()() as session:
-        try:
-            yield session
-        except Exception:
-            await session.rollback()
-            raise
-        else:
+    try:
+        yield session
+    except AppError as exc:
+        if exc.keeps_writes:
             await session.commit()
+        else:
+            await session.rollback()
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+    else:
+        await session.commit()
+
+
+async def get_db_session() -> AsyncIterator[AsyncSession]:
+    """One transaction per request. Nothing else commits.
+
+    Commit lives here rather than in a repository so the use case is one unit of work, and so the
+    test harness can wrap each test in an outer transaction it rolls back.
+    """
+    async with get_session_factory()() as session, request_transaction(session):
+        yield session

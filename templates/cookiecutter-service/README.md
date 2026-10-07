@@ -9,12 +9,13 @@ Cloud Run health endpoints, CI and an inert-until-configured CD pipeline — and
 when you ask for one, arrives with a typed API client generated from that backend's own OpenAPI
 document.
 
-**With a database, the endpoints it ships are the two health probes and four real authentication
-endpoints** — register, login, me, change password. They are the worked example of the layering,
-and they are also a feature every service eventually needs, which is the point: there is nothing
-here named after a thing no product has, waiting to be renamed or deleted. What they are not is a
-complete auth system. No refresh tokens, no revocation, no roles. `backend/AGENTS.md` says so in
-as many words, and the handbook's JWT guide is where the rest of it is.
+**With a database, the endpoints it ships are the two health probes and six real authentication
+endpoints** — register, login, refresh, logout, me, change password. They are the worked example of
+the layering, and they are also a feature every service eventually needs, which is the point: there
+is nothing here named after a thing no product has, waiting to be renamed or deleted. Session
+handling is complete — rotating refresh tokens, reuse detection, logout and revocation — and
+authorization is not: no roles, no permission guards, no ownership checks. `backend/AGENTS.md` says
+so in as many words, and the handbook's JWT guide is where the rest of it is.
 
 **With `use_postgres=no` the endpoints are the two health probes and nothing else.** Authentication
 needs a user table; a service with no tables cannot have one, and half an auth system is worse than
@@ -78,9 +79,9 @@ lockfile fails the build loudly rather than silently resolving something new.
 | `gcp_project_id` | `your-gcp-project` | The GCP project the Pulumi stack targets: `infra/pulumi/Pulumi.dev.yaml`, the state-bucket URL in `Pulumi.yaml`, and the bootstrap script's default. Not in any workflow. |
 | `gcp_region` | `europe-west1` | Same three places. Cloud Run, Cloud SQL and Artifact Registry all live here. |
 | `github_repository` | `your-org/<slug>` | `owner/repo`. Becomes the Workload Identity provider's attribute condition, which is the one line stopping any repository on GitHub from assuming the CI identity. Wrong here means a deploy that cannot authenticate; a wildcard here means anyone can. |
-| `use_postgres` | `yes` | `no` drops Alembic, the ORM base, the database from Compose, readiness' database check **and the whole authentication example**, leaving the layer packages and the health endpoints. `yes` is the variant with a table, a migration and four working endpoints over it. |
+| `use_postgres` | `yes` | `no` drops Alembic, the ORM base, the database from Compose, readiness' database check **and the whole authentication example**, leaving the layer packages and the health endpoints. `yes` is the variant with two tables, two migrations and six working endpoints over them. |
 | `use_sentry` | `yes` | `no` drops the SDK and `app/core/observability.py`. `yes` wires it with an **empty DSN by default** — local development reports nothing, by rule. |
-| `include_frontend` | `no` | `yes` scaffolds the React SPA: Vite, TanStack Router and Query, Tailwind v4 with shadcn/ui, a generated API client, Vitest, its own justfile, Compose service, production image, CI *and* CD workflows, and its own Cloud Run service in the Pulumi stack — and turns on CORS in the backend, pointed at that service's URL. Its one page is a dashboard over `/health/ready`; it does **not** sign anybody in, and there is no token in `localStorage`, because where a browser keeps a credential is a decision this template will not make for you. `no` removes the directory, both its workflows and the CORS test entirely. |
+| `include_frontend` | `no` | `yes` scaffolds the React SPA: Vite, TanStack Router and Query, Tailwind v4 with shadcn/ui, a generated API client, Vitest, its own justfile, Compose service, production image, CI *and* CD workflows, and its own Cloud Run service in the Pulumi stack — and turns on CORS in the backend, pointed at that service's URL. With a database it signs people in: the refresh token becomes an httpOnly cookie with a CSRF check in front of it, and the access token lives in memory. `no` removes the directory, both its workflows, the CORS test and the refresh cookie entirely — the refresh token then travels in the JSON body. |
 
 ## What is at the root, and what is in `backend/`
 
@@ -119,13 +120,18 @@ template into a scratch directory with `include_frontend=yes` and copy across fi
    `test`, `build` and the `gen-api` recipe.
 4. `.github/workflows/frontend-ci.yml`, the `VITE_*` and `CORS_ORIGINS` block in `.env.example`,
    and the CORS middleware in `backend/app/main.py` with its setting and its test.
+   With a database, also the browser's half of the refresh token: `backend/app/api/refresh_cookie.py`
+   and its test, the two `refresh_cookie_*` settings and their validator in `app/core/config.py`,
+   `REFRESH_COOKIE_SECURE` in `.env.example`, and the cookie versions of `app/api/v1/auth.py`,
+   `AccessTokenRead` in `app/schemas/auth.py` and the two session test modules. The service, the
+   repository and the table do not change; only where the refresh token travels does.
 5. Its half of the deployment: the second `Service(...)` and its two exports in
    `infra/pulumi/__main__.py`, the `web` runtime account in `components/identities.py`, the two
    frontend rows in `infra/scripts/sync-github.sh`, and
    `.github/workflows/frontend-cd.yml`. The unit test in `infra/pulumi/tests` that asserts those
    three name the same variables is what tells you if you copied two of the three.
 
-Nothing in `backend/` moves.
+Nothing else in `backend/` moves.
 
 ## The cookiecutter trap this template handles explicitly
 
@@ -174,9 +180,10 @@ the file for a doubled brace that is not a cookiecutter variable you meant to wr
   key" below for why the difference is deliberate.
 - **Async SQLAlchemy 2.0 + Alembic**, with an `env.py` that gets two things right that are easy to
   get wrong: the `context.begin_transaction()` block (without it the DDL runs and is discarded,
-  and Alembic reports success over an empty database) and a URL read from `config.attributes`
-  before Settings (so a test can inject one). One revision, `0001_create_users`, which is the
-  table the authentication endpoints are built on and the root every later revision hangs off.
+  and Alembic reports success over an empty database) and a URL — or a whole connection — read
+  from `config.attributes` before Settings (so a test can inject one). Two revisions,
+  `0001_create_users` and `0002_create_refresh_sessions`: the tables the authentication endpoints
+  are built on, and the root every later revision hangs off.
 - **A multi-stage production image**: lockfile before source, a production stage that starts from a
   fresh slim base rather than inheriting the build toolchain, UID 1000, a HEALTHCHECK, and
   gunicorn + uvicorn workers with `WEB_CONCURRENCY` and `$PORT` from the environment. The start
@@ -185,39 +192,47 @@ the file for a doubled brace that is not a cookiecutter variable you meant to wr
   `--graceful-timeout` that make Cloud Run drain rather than kill are explained beside the flags.
 - **Cloud Run shape**: separate `/health/live` and `/health/ready`, `NullPool` plus
   `prepared_statement_cache_size=0` for Cloud SQL, structured JSON logs, graceful shutdown.
-- **Authentication, as the worked example.** Argon2id through `pwdlib`, HS256 access tokens
-  through `PyJWT`, a bearer dependency that is the only place 401 is decided, and a router split
-  that makes a new route authenticated by default. Four endpoints, and the list of what it does
+- **Authentication, as the worked example.** Argon2id through `pwdlib`, HS256 access and refresh
+  tokens through `PyJWT`, refresh tokens that rotate on every use and revoke their whole family when
+  one comes back, a bearer dependency that is the only place 401 is decided, and a router split
+  that makes a new route authenticated by default. Six endpoints, and the list of what it does
   *not* do is in `backend/AGENTS.md` where somebody will read it.
 - **A real suite**: per-worker schema isolation, per-test transaction rollback, and tests that run
   through the whole stack to a real Postgres — including a decoder test per vulnerability class,
   because a suite that only decodes tokens the service minted proves the happy path and nothing
-  about the arguments to `jwt.decode`.
+  about the arguments to `jwt.decode`; a two-connection test that the rotation lock really blocks;
+  and every migration run up, down and against the models in a schema that is rolled back after.
 
 ### The authentication example, and where it stops
 
-Four endpoints: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/me`,
+Six endpoints: `POST /api/v1/auth/register`, `POST /api/v1/auth/login`,
+`POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me` and
 `POST /api/v1/auth/change-password`. They exist because the template needed one worked resource
 and this is the one every service ends up writing anyway — so unlike a toy `items` CRUD, nothing
 about it is waiting to be renamed or deleted.
 
-It is the handbook's JWT guide, implemented as far as those four endpoints reach:
+It is the handbook's JWT guide, implemented as far as those six endpoints reach — everything up to
+the permission guard:
 
 | | |
 | --- | --- |
 | Passwords | Argon2id via `pwdlib`, at `PasswordHash.recommended()` — m=64 MiB, t=3, p=4. Hashed on a worker thread, because 50-100 ms of CPU inside an `async def` is 50-100 ms nothing else on that event loop runs, readiness probe included. |
 | Unknown accounts | Verified against a throwaway digest anyway, so a miss costs what a hit costs. A login endpoint that is fast for unknown addresses is a user directory. |
 | Hash migration | `verify_and_update` on every login, persisted only when pwdlib returns a new digest. Login is the only moment the plaintext is in hand. |
-| Tokens | HS256 via `PyJWT`. `sub`, `typ`, `iss`, `aud`, `iat`, `exp`, `jti`; fifteen minutes. |
+| Tokens | HS256 via `PyJWT`. `sub`, `typ`, `iss`, `aud`, `iat`, `exp`, `jti`. An access token lasts fifteen minutes; a refresh token thirty days, carries no permissions, and is refused as a bearer token. |
 | Decoding | An algorithm allowlist, required claims, issuer and audience checked, and `typ` compared — four arguments that are each a documented vulnerability class when they are left out. |
+| Sessions | A `refresh_sessions` row per refresh token, keyed by its `jti`; the token itself is never stored. Every refresh revokes the token it spent and issues the next one in the same family, with the row locked `FOR UPDATE`. A spent token coming back revokes the whole family. |
+| Reuse detection that survives its own 401 | A refused request rolls its writes back — except the family revocation, which is the point of the refusal. `CompromisedSessionError` is the one error the session dependency commits on. |
+| Logout and revocation | Logout revokes the family and never fails. Changing a password revokes every family the user has and hands the caller a new one. A deactivated user's next refresh is refused and its family revoked. Revocation latency is the access token's fifteen minutes, and the service docstring says so. |
+| Where the refresh token travels | In the JSON body without a frontend. With one, in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie scoped to `/api/v1/auth`, never in a body, with refresh and logout behind a custom-header and `Origin` CSRF check. |
 | 401 | Decided in exactly one place, `get_current_actor`. `HTTPBearer(auto_error=False)`, because `auto_error=True` answers **403** to a missing header, in FastAPI's error shape rather than yours. |
 | Closed by default | `app/api/router.py` mounts a `public` router and a `private` one carrying the actor dependency. A resource included in the wrong one is a mistake visible in a five-line file. |
 
-**What it does not do**, said here rather than discovered later: no refresh tokens, no logout, no
-revocation, no roles or permission guards, no password reset, no email verification, no rate limit
-on the login route. An access token is good until it expires; changing a password does not end a
-session, and deactivating a user does not either. Each of those is a step of the handbook's JWT
-guide, and the revocation half needs a table of its own.
+**What it does not do**, said here rather than discovered later: no roles or permission guards, no
+ownership checks, no password reset, no email verification, no rate limit on the login route, and
+no scheduled job deleting expired `refresh_sessions` rows. An access token is good until it
+expires, so revoking a session leaves the access token it already minted working for up to fifteen
+minutes. Roles and ownership are the last two steps of the handbook's JWT guide.
 
 ### The signing key
 
@@ -234,19 +249,19 @@ following the house rule rather than the guide's literal placement.
 Deployed, the Pulumi stack mints 48 random characters into Secret Manager and mounts them on the
 service alone. Nobody types the value and nobody needs to read it.
 
-### The migration
+### The migrations
 
-One revision, `0001_create_users`, and it replaced the empty `0001_baseline` that existed only
-because there were no tables. Now there is one, so a second revision that creates nothing would be
-a file every generated project deletes.
+Two revisions: `0001_create_users`, the root, and `0002_create_refresh_sessions` on top of it.
 
-`alembic upgrade head` on a fresh database creates `users` and `alembic_version`. `alembic check`
-reports no drift, `alembic downgrade base` works and has been run, and the first
-`alembic revision --autogenerate` writes a child of `0001` rather than a competing root.
+`alembic upgrade head` on a fresh database creates `users`, `refresh_sessions` and
+`alembic_version`. `tests/test_migrations.py` runs every revision up, checks the result against the
+models with `alembic check`, runs it down one and back up, and down to base — on a connection of its
+own, in a schema it creates and rolls back, so it never touches the database's real schema. The
+first `alembic revision --autogenerate` writes a child of `0002` rather than a competing root.
 
-`just db-seed` is still the one recipe that does not ship. The only table is `users`, and a seeded
-account whose password is printed in a template is a back door in every project generated from it.
-`backend/AGENTS.md` says what bringing it back looks like, with the first real resource.
+`just db-seed` is still the one recipe that does not ship. The only account table is `users`, and a
+seeded account whose password is printed in a template is a back door in every project generated
+from it. `backend/AGENTS.md` says what bringing it back looks like, with the first real resource.
 
 ### What the layering shows you now
 
@@ -279,14 +294,15 @@ stack, and largely the same files, as the reference application it was lifted fr
   page rather than their navigation.
 - **Tailwind v4 and shadcn/ui**, with the palette in `src/index.css` — there is no
   `tailwind.config.js` in v4, and no hex code belongs in a component.
-- **One page, and no sign-in flow.** The dashboard reads `/health/ready` and renders loading,
-  error and data — three of the four states every fetch has. The backend's auth endpoints are in
-  the generated types, so a login form compiles the moment somebody writes one, but this template
-  puts no token in `localStorage` and ships no auth flow: where a browser keeps a credential is a
-  decision with consequences and it is not a scaffold's to make. The form stack
-  (`react-hook-form`, `zod`, `@hookform/resolvers`) is installed and is what
-  `frontend/README.md` prescribes, so the first form is a component rather than a dependency
-  argument.
+- **Sign-in, registration, an account page and a dashboard**, with a database. The dashboard
+  reads `/health/ready` and renders loading, error and data — three of the four states every fetch
+  has. The refresh token is an httpOnly cookie no script can read; the access token lives in memory
+  only, is restored from the cookie after a reload by the route guard, and is refreshed on a 401 by
+  the client middleware — one refresh in flight however many requests failed, serialised across
+  tabs, with the failed request replayed. Sign-out ends the session on the server.
+  `frontend/AGENTS.md` has the reasoning, and the one deployment fact it depends on: the SPA and
+  the API on the same site. Without a database the dashboard is the only page. The form stack
+  (`react-hook-form`, `zod`, `@hookform/resolvers`) is what `frontend/README.md` prescribes.
 - **Vitest + Testing Library**, asserting through roles and text, mocking at the `api` client
   rather than at `fetch`.
 - **A production image** that builds with pnpm and serves with `nginx-unprivileged` on `$PORT`,
