@@ -228,9 +228,6 @@ judgement, and say which you followed and why, naming the rule. The person can o
 a **MUST** included — tell them what the rule says and let them choose. Where your own habit and a
 rule disagree, the rule wins.
 
-**Read `provenance` on every rule.** `endorsed` is current and in force. `stale` is past its review
-date, `draft` is unfinished, and `deprecated` is superseded — say which when you rely on one.
-
 **Cite what you used** by title and reference — in the plan, in the commit message, in the review
 comment. References are opaque, they are issued to you, and they are the only way to point at a page.
 
