@@ -149,7 +149,9 @@ def client_for(session: AsyncSession) -> ClientFactory:
     """
 
     @asynccontextmanager
-    async def _client(app_settings: Settings) -> AsyncIterator[AsyncClient]:
+    async def _client(
+        app_settings: Settings, /, *, raise_app_exceptions: bool = True
+    ) -> AsyncIterator[AsyncClient]:
         app = create_app(app_settings)
 
         async def _session_override() -> AsyncIterator[AsyncSession]:
@@ -160,7 +162,11 @@ def client_for(session: AsyncSession) -> ClientFactory:
         # A route reading `SettingsDep` sees the settings this app was built from, not whatever
         # `get_settings()` would load from the environment.
         app.dependency_overrides[get_settings] = lambda: app_settings
-        transport = ASGITransport(app=app)
+        # Raising by default, so an unexpected error fails the test with its own traceback rather
+        # than as a status-code mismatch. Starlette re-raises an unhandled error after the
+        # catch-all handler has sent its 500; `raise_app_exceptions=False` leaves the client
+        # holding that 500 instead, which is what a real server's caller gets.
+        transport = ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
         async with AsyncClient(transport=transport, base_url="http://test") as http_client:
             yield http_client
         app.dependency_overrides.clear()

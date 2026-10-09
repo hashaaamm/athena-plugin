@@ -107,6 +107,10 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
 
     Commit lives here rather than in a repository so the use case is one unit of work, and so the
     test harness can wrap each test in an outer transaction it rolls back.
+
+    The commit runs before the response is sent only because `SessionDep` in `app/api/deps.py`
+    declares `scope="function"`. Depending on this function any other way puts the commit after
+    the response, where a failure can no longer change the status code the client was given.
     """
     async with get_session_factory()() as session, request_transaction(session):
         yield session

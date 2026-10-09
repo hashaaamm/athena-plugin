@@ -8,7 +8,9 @@ description = "{{ cookiecutter.description }}"
 requires-python = ">={{ cookiecutter.python_version }}"
 dependencies = [
     # --- Web ---
-    "fastapi>=0.115",
+    # 0.121 is the floor, not a preference: it added `Depends(..., scope="function")`, which
+    # `SessionDep` in `app/api/deps.py` needs to commit before the response is sent.
+    "fastapi>=0.121",
     "uvicorn[standard]>=0.32",
     "gunicorn>=23.0",
     # --- Contracts + config ---

@@ -48,13 +48,15 @@ def upgrade() -> None:
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
         ),
-        sa.PrimaryKeyConstraint("id"),
+        # Named by the convention on `Base.metadata` (app/models/base.py), as autogenerate writes
+        # it. `op.f()` marks the name as final so the convention is not applied to it twice.
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
     )
     # Unique *index*, matching `unique=True, index=True` on the model. Emitting a separate
     # UniqueConstraint as well would make `alembic check` report permanent drift.
-    op.create_index("ix_users_email", "users", ["email"], unique=True)
+    op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_users_email", table_name="users")
+    op.drop_index(op.f("ix_users_email"), table_name="users")
     op.drop_table("users")

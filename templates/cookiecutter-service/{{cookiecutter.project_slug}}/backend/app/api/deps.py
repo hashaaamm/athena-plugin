@@ -7,6 +7,11 @@ be overridden, and a graph assembled in three files cannot be reasoned about.
 Views import only the `...Dep` aliases at the bottom. A new resource adds a block here — a
 `get_<x>_repository`, a `get_<x>_service` and one `Annotated` alias — and nothing anywhere else
 constructs either of them.
+
+Every provider is `async def`, including the ones that await nothing. FastAPI runs a plain `def`
+dependency on the AnyIO threadpool — forty threads shared with every other sync call — so a sync
+provider that only builds an object costs a thread hop per request and queues behind whatever has
+saturated the pool.
 """
 
 from __future__ import annotations
@@ -33,24 +38,28 @@ from app.services.health_service import HealthService
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 {%- if cookiecutter.use_postgres == "yes" %}
-SessionDep = Annotated[AsyncSession, Depends(get_db_session)]
+#: `scope="function"` is what makes the commit happen before the response is sent. With the
+#: default scope FastAPI runs the code after `yield` — `get_db_session`'s commit — once the
+#: response has already gone, so a commit that fails leaves the client holding a 2xx for a write
+#: that never happened. With it, a failed commit is a 500 the client sees.
+SessionDep = Annotated[AsyncSession, Depends(get_db_session, scope="function")]
 {%- endif %}
 
 
 # --- Health --------------------------------------------------------------
 
 {% if cookiecutter.use_postgres == "yes" %}
-def get_health_repository(session: SessionDep) -> HealthRepository:
+async def get_health_repository(session: SessionDep) -> HealthRepository:
     return HealthRepository(session)
 
 
-def get_health_service(
+async def get_health_service(
     repository: Annotated[HealthRepository, Depends(get_health_repository)],
     settings: SettingsDep,
 ) -> HealthService:
     return HealthService(repository, version=settings.git_sha)
 {% else %}
-def get_health_service(settings: SettingsDep) -> HealthService:
+async def get_health_service(settings: SettingsDep) -> HealthService:
     return HealthService(version=settings.git_sha)
 {% endif %}
 
@@ -61,15 +70,15 @@ HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
 # --- Authentication ------------------------------------------------------
 
 
-def get_user_repository(session: SessionDep) -> UserRepository:
+async def get_user_repository(session: SessionDep) -> UserRepository:
     return UserRepository(session)
 
 
-def get_refresh_session_repository(session: SessionDep) -> RefreshSessionRepository:
+async def get_refresh_session_repository(session: SessionDep) -> RefreshSessionRepository:
     return RefreshSessionRepository(session)
 
 
-def get_auth_service(
+async def get_auth_service(
     users: Annotated[UserRepository, Depends(get_user_repository)],
     sessions: Annotated[RefreshSessionRepository, Depends(get_refresh_session_repository)],
 ) -> AuthService:

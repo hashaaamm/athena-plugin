@@ -8,17 +8,26 @@ rather than `hunter2` because the schema enforces a twelve-character floor.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from typing import Any
+from typing import Any, Protocol
 
 from httpx import AsyncClient
 
 from app.core.config import Settings
 
-#: What the `client_for` fixture returns: settings in, an HTTP client bound to the test's
-#: transaction out, for a test that needs the app built differently from the default.
-ClientFactory = Callable[[Settings], AbstractAsyncContextManager[AsyncClient]]
+
+class ClientFactory(Protocol):
+    """What the `client_for` fixture returns: settings in, an HTTP client bound to the test's
+    transaction out, for a test that needs the app built differently from the default.
+
+    `raise_app_exceptions=False` makes the client behave like a real server's caller: an unhandled
+    error arrives as the 500 the catch-all handler wrote instead of being raised into the test.
+    """
+
+    def __call__(
+        self, settings: Settings, /, *, raise_app_exceptions: bool = True
+    ) -> AbstractAsyncContextManager[AsyncClient]: ...
+
 
 PASSWORD = "correct horse battery staple"
 NEW_PASSWORD = "a different passphrase entirely"

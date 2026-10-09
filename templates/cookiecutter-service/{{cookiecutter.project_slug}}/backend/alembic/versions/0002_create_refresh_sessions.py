@@ -41,19 +41,24 @@ def upgrade() -> None:
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
         ),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+            name=op.f("fk_refresh_sessions_user_id_users"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_refresh_sessions")),
     )
     # Plain, not CONCURRENTLY. Both are built on a table this same transaction has just created, so
     # nothing else can be reading or writing it, and CREATE INDEX CONCURRENTLY cannot run inside a
     # transaction at all. An index added later to a table with traffic is the case that needs it.
-    op.create_index("ix_refresh_sessions_family_id", "refresh_sessions", ["family_id"])
-    op.create_index("ix_refresh_sessions_user_id", "refresh_sessions", ["user_id"])
+    op.create_index(op.f("ix_refresh_sessions_family_id"), "refresh_sessions", ["family_id"])
+    op.create_index(op.f("ix_refresh_sessions_user_id"), "refresh_sessions", ["user_id"])
 
 
 def downgrade() -> None:
     # Every refresh token in circulation stops working, because the rows that vouch for them are
     # gone. Access tokens are unaffected and expire on their own; users sign in again.
-    op.drop_index("ix_refresh_sessions_user_id", table_name="refresh_sessions")
-    op.drop_index("ix_refresh_sessions_family_id", table_name="refresh_sessions")
+    op.drop_index(op.f("ix_refresh_sessions_user_id"), table_name="refresh_sessions")
+    op.drop_index(op.f("ix_refresh_sessions_family_id"), table_name="refresh_sessions")
     op.drop_table("refresh_sessions")

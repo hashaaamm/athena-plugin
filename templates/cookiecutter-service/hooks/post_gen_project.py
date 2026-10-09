@@ -101,6 +101,7 @@ def main() -> None:
             "backend/tests/test_sessions_api.py",
             "backend/tests/test_signing_key.py",
             "backend/tests/test_tokens.py",
+            "backend/tests/test_unit_of_work.py",
         )
         # The web client's half of the same cut. A sign-in form posting to an endpoint that was
         # deleted three paragraphs ago is worse than no sign-in form: it compiles, it renders,

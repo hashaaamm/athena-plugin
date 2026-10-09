@@ -8,13 +8,28 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+#: Every index and constraint gets a name the code can predict. Left unnamed, Postgres invents one
+#: — `users_pkey`, `refresh_sessions_user_id_fkey` — that no file in this repository contains, and
+#: `drop_constraint` needs that name in a `downgrade()` and in every later change to the
+#: constraint. Autogenerate writes these names into each revision, so a migration and the models
+#: agree on them by construction. `tests/test_migrations.py` checks that they do.
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
 
 
 class Base(DeclarativeBase):
     """Every model inherits this. Alembic autogenerate reads its metadata."""
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 class UUIDMixin:

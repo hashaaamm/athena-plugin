@@ -75,9 +75,17 @@ has no tables at all. The first resource you add is what makes the rest of it re
 ## Rules specific to this service
 
 1. Nothing commits except the session dependency in `app/core/database.py`. Repositories `flush()`.
+   It commits before the response is sent because `SessionDep` in `app/api/deps.py` declares
+   `scope="function"`; without it a failed commit still answers 2xx. Every provider in `deps.py`
+   is `async def`. Never `asyncio.gather` over the request session: one `AsyncSession` is one
+   connection, and it is not safe for concurrent tasks.
 2. No `os.environ` outside `app/core/config.py`. Read settings through `get_settings()`.
-3. No blocking call inside an `async def`. Use `httpx.AsyncClient` with an explicit timeout, or
-   `asyncio.to_thread` for CPU-bound work.
+3. No blocking call inside an `async def`. Outbound HTTP uses one `httpx.AsyncClient` per process,
+   with an explicit timeout, created in `lifespan` and handed out by a `deps.py` provider — never a
+   client per call. The test client does not run `lifespan`, so tests override that provider.
+   Blocking I/O, and C extensions that release the GIL, go through `anyio.to_thread.run_sync`, as
+   `app/core/security/passwords.py` does for argon2. Pure-Python CPU work goes to a worker: a thread
+   does not free the event loop for it.
 4. Every route declares `response_model`, an accurate `status_code`, and error `responses`.
 {%- if cookiecutter.use_postgres == "yes" %}
 5. A password digest never leaves the data layer. It is not on a response schema, not in a log

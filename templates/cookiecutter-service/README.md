@@ -174,6 +174,9 @@ the file for a doubled brace that is not a cookiecutter variable you meant to wr
   contracts that fail CI on a violation, an ORM ban outside the data layer and an HTTP-types ban
   inside it.
 - **One composition point.** `app/api/deps.py` builds the graph; tests override the session there.
+  The session dependency is `scope="function"`, so the request's commit runs before the response is
+  sent and a commit that fails is a 500 — with FastAPI's default scope it would run after a 2xx had
+  already gone. That is why `fastapi>=0.121` is the floor.
 - **Typed settings.** One `Settings`, an `lru_cache`d accessor, no `os.environ` anywhere else, and
   a validator that refuses a placeholder password outside `local` and `test`. The JWT signing key
   is checked the same way but in `create_app` rather than in that validator — see "The signing
@@ -181,7 +184,8 @@ the file for a doubled brace that is not a cookiecutter variable you meant to wr
 - **Async SQLAlchemy 2.0 + Alembic**, with an `env.py` that gets two things right that are easy to
   get wrong: the `context.begin_transaction()` block (without it the DDL runs and is discarded,
   and Alembic reports success over an empty database) and a URL — or a whole connection — read
-  from `config.attributes` before Settings (so a test can inject one). Two revisions,
+  from `config.attributes` before Settings (so a test can inject one). A naming convention on
+  `Base.metadata`, so every constraint and index has a name a `downgrade()` can drop. Two revisions,
   `0001_create_users` and `0002_create_refresh_sessions`: the tables the authentication endpoints
   are built on, and the root every later revision hangs off.
 - **A multi-stage production image**: lockfile before source, a production stage that starts from a
@@ -201,7 +205,8 @@ the file for a doubled brace that is not a cookiecutter variable you meant to wr
   through the whole stack to a real Postgres — including a decoder test per vulnerability class,
   because a suite that only decodes tokens the service minted proves the happy path and nothing
   about the arguments to `jwt.decode`; a two-connection test that the rotation lock really blocks;
-  and every migration run up, down and against the models in a schema that is rolled back after.
+  a write whose commit fails, answered with a 500 rather than a 201; and every migration run up,
+  down and against the models — constraint names included — in a schema that is rolled back after.
 
 ### The authentication example, and where it stops
 
