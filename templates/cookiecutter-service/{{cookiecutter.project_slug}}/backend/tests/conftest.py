@@ -38,7 +38,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 {%- endif %}
-
+{% if cookiecutter.use_postgres == "yes" %}
+from app.api.deps import get_request_settings
+{%- endif %}
 from app.core.config import Settings, get_settings
 {%- if cookiecutter.use_postgres == "yes" %}
 from app.core.database import get_db_session, request_transaction
@@ -158,10 +160,13 @@ def client_for(session: AsyncSession) -> ClientFactory:
             async with request_transaction(session):
                 yield session
 
-        app.dependency_overrides[get_db_session] = _session_override
         # A route reading `SettingsDep` sees the settings this app was built from, not whatever
         # `get_settings()` would load from the environment.
-        app.dependency_overrides[get_settings] = lambda: app_settings
+        async def _settings_override() -> Settings:
+            return app_settings
+
+        app.dependency_overrides[get_db_session] = _session_override
+        app.dependency_overrides[get_request_settings] = _settings_override
         # Raising by default, so an unexpected error fails the test with its own traceback rather
         # than as a status-code mismatch. Starlette re-raises an unhandled error after the
         # catch-all handler has sent its 500; `raise_app_exceptions=False` leaves the client

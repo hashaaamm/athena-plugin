@@ -36,7 +36,17 @@ from app.services.auth_service import AuthService
 {%- endif %}
 from app.services.health_service import HealthService
 
-SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+async def get_request_settings() -> Settings:
+    """`get_settings()` for the request graph, and the seam a test overrides.
+
+    `get_settings` stays a plain function because config loading, Alembic and the CLI call it
+    outside any request. Depending on it directly would put a cached lookup on the threadpool.
+    """
+    return get_settings()
+
+
+SettingsDep = Annotated[Settings, Depends(get_request_settings)]
 {%- if cookiecutter.use_postgres == "yes" %}
 #: `scope="function"` is what makes the commit happen before the response is sent. With the
 #: default scope FastAPI runs the code after `yield` — `get_db_session`'s commit — once the
