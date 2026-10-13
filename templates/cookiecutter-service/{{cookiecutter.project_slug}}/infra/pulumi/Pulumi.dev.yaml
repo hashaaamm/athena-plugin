@@ -33,8 +33,8 @@ config:
   {{ cookiecutter.project_slug }}:databaseDiskGb: "10"
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-  # Flip to "true" after `gcloud secrets versions add {{ cookiecutter.project_slug }}-sentry-dsn-dev --data-file=-`.
-  # Until then the container is empty, and mounting an empty container fails the deploy rather than
-  # starting the service without error tracking.
-  {{ cookiecutter.project_slug }}:sentryDsnSet: "false"
+  # Set to the version number `gcloud secrets versions add {{ cookiecutter.project_slug }}-sentry-dsn-dev --data-file=-`
+  # prints. Until then the container is empty, and mounting an empty container fails the deploy
+  # rather than starting the service without error tracking.
+  {{ cookiecutter.project_slug }}:sentryDsnVersion: ""
 {%- endif %}

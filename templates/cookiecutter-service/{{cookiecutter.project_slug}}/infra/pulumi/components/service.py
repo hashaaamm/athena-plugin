@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 import pulumi
 import pulumi_gcp as gcp
 
+from components.secrets import SecretRef
 from config import StackConfig
 
 #: Placeholder until the first CD run. Cloud Run refuses to create a service with no image, and
@@ -44,31 +45,29 @@ class JobSpec:
     command: list[str]
     args: list[str]
     env: Mapping[str, str] = field(default_factory=dict)
-    #: env var name -> logical secret name in `secret_ids`
+    #: env var name -> logical secret name in `secret_refs`
     secret_env: Mapping[str, str] = field(default_factory=dict)
 
 
-def _secret_env(
-    name: str, secret_id: pulumi.Input[str]
-) -> gcp.cloudrunv2.ServiceTemplateContainerEnvArgs:
+def _secret_env(name: str, ref: SecretRef) -> gcp.cloudrunv2.ServiceTemplateContainerEnvArgs:
     return gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
         name=name,
         value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
             secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
-                secret=secret_id, version="latest"
+                secret=ref.secret, version=ref.version
             )
         ),
     )
 
 
 def _job_secret_env(
-    name: str, secret_id: pulumi.Input[str]
+    name: str, ref: SecretRef
 ) -> gcp.cloudrunv2.JobTemplateTemplateContainerEnvArgs:
     return gcp.cloudrunv2.JobTemplateTemplateContainerEnvArgs(
         name=name,
         value_source=gcp.cloudrunv2.JobTemplateTemplateContainerEnvValueSourceArgs(
             secret_key_ref=gcp.cloudrunv2.JobTemplateTemplateContainerEnvValueSourceSecretKeyRefArgs(
-                secret=secret_id, version="latest"
+                secret=ref.secret, version=ref.version
             )
         ),
     )
@@ -85,7 +84,7 @@ class Service(pulumi.ComponentResource):
         health_path: str,
         env: Mapping[str, pulumi.Input[str]] | None = None,
         secret_env: Mapping[str, str] | None = None,
-        secret_ids: Mapping[str, pulumi.Output[str]] | None = None,
+        secret_refs: Mapping[str, SecretRef] | None = None,
         connection_name: pulumi.Input[str] | None = None,
         cpu: str = "1",
         memory: str = "512Mi",
@@ -99,12 +98,12 @@ class Service(pulumi.ComponentResource):
 
         env = env or {}
         secret_env = secret_env or {}
-        secret_ids = secret_ids or {}
+        secret_refs = secret_refs or {}
 
         # Fail here rather than mid-apply. A missing key surfaces otherwise as a Cloud Run revision
         # that cannot resolve a secret, which reads as "the app is broken".
         for key in (*secret_env.values(), *(k for job in jobs for k in job.secret_env.values())):
-            if key not in secret_ids:
+            if key not in secret_refs:
                 raise KeyError(f"{app}: no secret named {key!r} was passed to this service")
 
         # Cloud SQL is opt-in. A service with no database gets no volume and no mount, rather than
@@ -164,7 +163,7 @@ class Service(pulumi.ComponentResource):
                                 for k, v in env.items()
                             ],
                             *[
-                                _secret_env(name, secret_ids[key])
+                                _secret_env(name, secret_refs[key])
                                 for name, key in secret_env.items()
                             ],
                         ],
@@ -213,7 +212,7 @@ class Service(pulumi.ComponentResource):
                 spec=spec,
                 runtime_email=runtime_email,
                 connection_name=connection_name,
-                secret_ids=secret_ids,
+                secret_refs=secret_refs,
             )
             for spec in jobs
         }
@@ -229,7 +228,7 @@ class Service(pulumi.ComponentResource):
         spec: JobSpec,
         runtime_email: pulumi.Input[str],
         connection_name: pulumi.Input[str] | None,
-        secret_ids: Mapping[str, pulumi.Output[str]],
+        secret_refs: Mapping[str, SecretRef],
     ) -> gcp.cloudrunv2.Job:
         volumes = (
             [
@@ -283,7 +282,7 @@ class Service(pulumi.ComponentResource):
                                     for k, v in spec.env.items()
                                 ],
                                 *[
-                                    _job_secret_env(name, secret_ids[key])
+                                    _job_secret_env(name, secret_refs[key])
                                     for name, key in spec.secret_env.items()
                                 ],
                             ],

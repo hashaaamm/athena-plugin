@@ -12,16 +12,22 @@ So there are two kinds of secret here, and they behave differently:
   The database DSN and the token signing key.
 {%- endif %}
   They are encrypted in state with the KMS key the bootstrap script created, and they have a
-  version the moment the stack applies. That last part matters: Cloud Run resolves
-  `secret:latest` when a revision is *created*, so a container with no versions is a deploy that
-  fails outright rather than a service missing a feature.
+  version the moment the stack applies, which the service pins by number.
 * **Manual.** Anything that genuinely originates outside — a Sentry DSN, a third-party API key.
   The stack creates the empty container and grants access to it; a human adds the value with
-  `gcloud secrets versions add`. Because the container starts empty, nothing may mount it until
-  that has happened, which is what the `sentryDsnSet` stack configuration key gates.
+  `gcloud secrets versions add` and puts the version number it prints into stack configuration.
+  Until then the secret has no reference, so nothing can mount it.
+
+Every reference pins a version number, never `latest`. Cloud Run reads an environment secret when
+an instance *starts*, so with `latest` a rotation leaves the instances of one revision holding
+different values. Pinned, a rotation is a new revision, and a rollback restores the credential with
+the image. Retrieve the Cloud Run standards for the graded form.
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 import pulumi
 import pulumi_gcp as gcp
@@ -37,6 +43,14 @@ MANUAL_SECRETS: tuple[str, ...] = ()
 {%- endif %}
 
 
+@dataclass(frozen=True, slots=True)
+class SecretRef:
+    """What a service needs to mount a secret: the container and the exact version to read."""
+
+    secret: pulumi.Input[str]
+    version: pulumi.Input[str]
+
+
 class Secrets(pulumi.ComponentResource):
     def __init__(
         self,
@@ -44,6 +58,7 @@ class Secrets(pulumi.ComponentResource):
         accessor_email: pulumi.Input[str],
         database_url: pulumi.Input[str] | None = None,
         jwt_secret: pulumi.Input[str] | None = None,
+        manual_versions: Mapping[str, str] | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ) -> None:
         super().__init__("service:infra:Secrets", config.name("secrets"), None, opts)
@@ -54,6 +69,10 @@ class Secrets(pulumi.ComponentResource):
         #: Every version this component creates. Anything that mounts a secret must depend on
         #: these, not merely on the containers — the container is not the dependency, the value is.
         self.versions: list[pulumi.Resource] = []
+        #: Logical name -> a pinned reference, for every secret that has a version to pin. A manual
+        #: secret appears here only once its version number is in stack configuration, so mounting
+        #: an empty container is a `KeyError` at plan time rather than a revision that cannot start.
+        self.refs: dict[str, SecretRef] = {}
 
         member = pulumi.Output.from_input(accessor_email).apply(
             lambda email: f"serviceAccount:{email}"
@@ -65,8 +84,11 @@ class Secrets(pulumi.ComponentResource):
         if jwt_secret is not None:
             self._versioned(config, "jwt-secret", member, jwt_secret)
 
+        manual_versions = manual_versions or {}
         for name in MANUAL_SECRETS:
-            self._container(config, name, member)
+            secret = self._container(config, name, member)
+            if manual_versions.get(name):
+                self.refs[name] = SecretRef(secret=secret.secret_id, version=manual_versions[name])
 
         self.register_outputs({})
 
@@ -79,14 +101,15 @@ class Secrets(pulumi.ComponentResource):
     ) -> gcp.secretmanager.Secret:
         """The container and its first version, for a value the stack generates."""
         secret = self._container(config, name, member)
-        self.versions.append(
-            gcp.secretmanager.SecretVersion(
-                f"{name}-version",
-                secret=secret.id,
-                secret_data=value,
-                opts=pulumi.ResourceOptions(parent=self, additional_secret_outputs=["secret_data"]),
-            )
+        version = gcp.secretmanager.SecretVersion(
+            f"{name}-version",
+            secret=secret.id,
+            secret_data=value,
+            opts=pulumi.ResourceOptions(parent=self, additional_secret_outputs=["secret_data"]),
         )
+        self.versions.append(version)
+        # The version's own number, so a new value is a new revision rather than a silent change.
+        self.refs[name] = SecretRef(secret=secret.secret_id, version=version.version)
         return secret
 
     def _container(

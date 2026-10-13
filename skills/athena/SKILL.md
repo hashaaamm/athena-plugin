@@ -190,7 +190,6 @@ Reach for these when you already know which question you are asking.
 | `athena_rules` | "Here is the diff — what must hold?" **Say what the change is about: `topics=['authorization', 'migrations']`.** `paths` narrows it further, but only answers for files a page declares it governs — see below. A framework alone is refused. |
 | `athena_guide` | "How do I build X?" One guide, with its code and the rules that bind it. |
 | `athena_knowledge` | "What must I keep in mind about X?" Synthesis, not passages. |
-| `athena_route` | "I do not know where to start." Returns the category and the next call, no content. |
 | `athena_get` | Read one thing in full, by redeeming a reference you were given. |
 | `athena_feedback` | Report that guidance was wrong, or that it was never there — the moment it happens, not at the end of the run. |
 
@@ -198,7 +197,7 @@ Reach for these when you already know which question you are asking.
 
 A response can carry `clarify` and no content. That is not a failure and not an empty result — it
 means two or more pages fit and picking one would be a guess the agent downstream cannot see.
-`athena_guide` and `athena_route` both do it.
+`athena_guide` does it.
 
 Do not retry the same call, and do not pick one of the named options at random. Either ask the
 person the question, or answer it yourself from the repository — you can usually see which stack

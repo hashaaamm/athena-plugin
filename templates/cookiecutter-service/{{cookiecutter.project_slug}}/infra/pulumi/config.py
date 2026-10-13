@@ -78,14 +78,14 @@ class StackConfig:
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
 
-    #: Whether a version has been added to the Sentry DSN secret container.
+    #: The Sentry DSN secret version the service pins, e.g. `"1"`. Empty means "not mounted".
     #:
-    #: False by default, and the default has to stay applyable. Cloud Run resolves `secret:latest`
-    #: when a revision is *created*, so mounting a container with no versions is a deploy that
-    #: fails outright rather than a service that starts without error tracking. The stack creates
-    #: the empty container; a human runs `gcloud secrets versions add`; only then does this flip to
-    #: true and the mount appear.
-    sentry_dsn_set: bool = False
+    #: Empty by default, and the default has to stay applyable: mounting a container with no
+    #: versions is a deploy that fails outright rather than a service that starts without error
+    #: tracking. The stack creates the empty container; a human runs `gcloud secrets versions add`
+    #: and puts the number it prints here; only then does the mount appear. Rotating the DSN is the
+    #: same two steps with the next number, which deploys a new revision.
+    sentry_dsn_version: str = ""
 {%- endif %}
 
     def __post_init__(self) -> None:
@@ -169,6 +169,6 @@ def load() -> StackConfig:
         database_disk_gb=config.get_int("databaseDiskGb") or 10,
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-        sentry_dsn_set=config.get_bool("sentryDsnSet") or False,
+        sentry_dsn_version=(config.get("sentryDsnVersion") or "").strip(),
 {%- endif %}
     )

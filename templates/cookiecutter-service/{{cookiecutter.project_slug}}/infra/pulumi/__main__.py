@@ -62,6 +62,9 @@ secrets = Secrets(
     database_url=database.database_url,
     jwt_secret=jwt_secret.result,
 {%- endif %}
+{%- if cookiecutter.use_sentry == "yes" %}
+    manual_versions={"sentry-dsn": config.sentry_dsn_version},
+{%- endif %}
     opts=after_apis,
 )
 
@@ -84,16 +87,16 @@ RUNTIME_ENV = {
 
 #: Environment variable name -> the logical secret it is mounted from.
 #:
-#: The Sentry DSN is mounted only once a version exists, because Cloud Run resolves `secret:latest`
-#: when a revision is created and an empty container fails the deploy outright. Add the value, then
-#: set `sentryDsnSet` — see `components/secrets.py`.
+#: The Sentry DSN is mounted only once its version number is in stack configuration, because an
+#: empty container fails the deploy outright. Add the value, then set `sentryDsnVersion` — see
+#: `components/secrets.py`.
 SECRET_ENV: dict[str, str] = {}
 {%- if cookiecutter.use_postgres == "yes" %}
 SECRET_ENV["DATABASE_URL_OVERRIDE"] = "database-url"
 SECRET_ENV["JWT_SECRET"] = "jwt-secret"
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-if config.sentry_dsn_set:
+if config.sentry_dsn_version:
     SECRET_ENV["SENTRY_DSN"] = "sentry-dsn"
 {%- endif %}
 {%- if cookiecutter.include_frontend == "yes" %}
@@ -149,7 +152,7 @@ backend = Service(
     health_path="/health/live",
     env=BACKEND_ENV,
     secret_env=SECRET_ENV,
-    secret_ids=secrets.ids,
+    secret_refs=secrets.refs,
 {%- if cookiecutter.use_postgres == "yes" %}
     connection_name=database.connection_name,
     jobs=[
@@ -162,9 +165,8 @@ backend = Service(
         )
     ],
 {%- endif %}
-    # Depends on the secret *versions*, not just the containers. Cloud Run resolves `secret:latest`
-    # when a revision is created, so a service that waits only for the container races the version
-    # into existence and fails with "version was not found".
+    # Depends on the secret *versions*, not just the containers: a service that waits only for the
+    # container races the version into existence and fails with "version was not found".
     opts=pulumi.ResourceOptions.merge(
         after_apis, pulumi.ResourceOptions(depends_on=secrets.versions)
     ),

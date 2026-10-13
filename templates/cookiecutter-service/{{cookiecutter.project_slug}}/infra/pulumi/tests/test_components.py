@@ -28,6 +28,8 @@ class Mocks(pulumi.runtime.Mocks):
         outputs = dict(args.inputs)
         if args.typ == "gcp:sql/databaseInstance:DatabaseInstance":
             outputs["connectionName"] = "test-project:europe-west1:app-pg-dev"
+        if args.typ == "gcp:secretmanager/secretVersion:SecretVersion":
+            outputs["version"] = "1"
         if args.typ == "gcp:serviceaccount/account:Account":
             outputs["email"] = f"{args.inputs.get('accountId', 'sa')}@test.iam.gserviceaccount.com"
         return f"{args.name}-id", outputs
@@ -43,6 +45,7 @@ class Mocks(pulumi.runtime.Mocks):
 pulumi.runtime.set_mocks(Mocks(), preview=False)
 
 from components import Identities, Secrets, Service  # noqa: E402 - must follow set_mocks
+from components.secrets import SecretRef  # noqa: E402 - must follow set_mocks
 from config import StackConfig  # noqa: E402 - must follow set_mocks
 
 SLUG = "{{ cookiecutter.project_slug }}"
@@ -211,8 +214,8 @@ def test_the_service_runs_as_the_runtime_account_not_the_default():
 
 
 def test_a_service_refuses_a_secret_it_was_never_given():
-    """Otherwise the failure is a revision that cannot resolve `secret:latest`, which reads as a
-    broken application rather than a mistyped key."""
+    """Otherwise the failure is a revision that cannot resolve its secret, which reads as a broken
+    application rather than a mistyped key."""
     with pytest.raises(KeyError, match="typo"):
         Service(
             CONFIG,
@@ -221,15 +224,31 @@ def test_a_service_refuses_a_secret_it_was_never_given():
             port=8080,
             health_path="/health/live",
             secret_env={"DATABASE_URL_OVERRIDE": "typo"},
-            secret_ids={"database-url": pulumi.Output.from_input("x")},
+            secret_refs={"database-url": SecretRef(secret="x", version="1")},
         )
 
 
 @pulumi.runtime.test
-def test_every_container_without_a_version_is_declared_manual():
-    """Cloud Run resolves `secret:latest` when a revision is *created*.
+def test_a_mounted_secret_is_pinned_to_a_version_number():
+    """Cloud Run reads an environment secret when an instance starts, so `latest` lets the
+    instances of one revision hold different values after a rotation. Pinned, a rotation is a new
+    revision and a rollback restores the credential with the image."""
+    assert '"latest"' not in (PULUMI_DIR / "components" / "service.py").read_text()
 
-    A container with no versions is therefore not "configured later" — it is a deploy that fails
+    def check(template):
+        ref = template.containers[0].envs[-1].value_source.secret_key_ref
+        assert ref.version == "7"
+        return True
+
+    return _service(
+        secret_env={"JWT_SECRET": "jwt-secret"},
+        secret_refs={"jwt-secret": SecretRef(secret="jwt-secret-dev", version="7")},
+    ).service.template.apply(check)
+
+
+@pulumi.runtime.test
+def test_every_container_without_a_version_is_declared_manual():
+    """A mounted container with no versions is not "configured later" — it is a deploy that fails
     outright. So a secret the stack can generate gets its version here, and a secret that
     genuinely comes from outside is listed in `MANUAL_SECRETS` and must not be mounted until a
     human has populated it.
@@ -588,7 +607,7 @@ def test_the_migration_job_exists_and_carries_the_database():
 
     service = _service(
         connection_name="test-project:europe-west1:app-pg-dev",
-        secret_ids={"database-url": pulumi.Output.from_input("database-url-dev")},
+        secret_refs={"database-url": SecretRef(secret="database-url-dev", version="1")},
         jobs=[
             JobSpec(
                 name="migrate",
@@ -631,14 +650,27 @@ def test_the_database_dsn_is_generated_rather_than_typed():
 @pulumi.runtime.test
 def test_the_sentry_container_is_created_empty_and_mounted_by_nothing():
     """It holds a value that originates outside this stack, so the stack cannot create a version.
-    Nothing may mount it until a human has added one — that is what `sentryDsnSet` gates."""
+    Nothing may mount it until a human has added one and set `sentryDsnVersion`."""
     from components.secrets import MANUAL_SECRETS
 
     assert "sentry-dsn" in MANUAL_SECRETS
     secrets = Secrets(CONFIG, accessor_email="runtime@test.iam.gserviceaccount.com")
     assert "sentry-dsn" in secrets.ids
     assert secrets.versions == []
-    assert CONFIG.sentry_dsn_set is False
+    assert "sentry-dsn" not in secrets.refs
+    assert CONFIG.sentry_dsn_version == ""
+    return pulumi.Output.from_input(True)
+
+
+@pulumi.runtime.test
+def test_a_populated_sentry_secret_is_pinned_to_its_configured_version():
+    """Once a human has added the DSN and recorded its number, that number is what is mounted."""
+    secrets = Secrets(
+        CONFIG,
+        accessor_email="runtime@test.iam.gserviceaccount.com",
+        manual_versions={"sentry-dsn": "3"},
+    )
+    assert secrets.refs["sentry-dsn"].version == "3"
     return pulumi.Output.from_input(True)
 {%- endif %}
 {%- if cookiecutter.include_frontend == "yes" %}
