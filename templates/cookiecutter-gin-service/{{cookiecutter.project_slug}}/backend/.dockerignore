@@ -1,0 +1,18 @@
+# Build context size is build time, and everything here is something the production image must not
+# need. Ask Athena for the containerization rules.
+.git
+.gitignore
+tmp
+*.md
+.env
+.env.*
+docker
+scripts
+queries
+sqlc.yaml
+.golangci.yml
+.air.toml
+justfile
+# Tests and their harness: `go build ./cmd/api` never compiles them.
+**/*_test.go
+internal/testdb

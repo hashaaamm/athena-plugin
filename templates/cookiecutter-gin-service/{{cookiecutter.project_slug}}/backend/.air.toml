@@ -1,0 +1,30 @@
+# air: rebuild and restart the dev server on every save. Used by docker/Dockerfile.dev only.
+#
+# Build output goes to /tmp inside the container, not to a tmp/ directory in the bind-mounted source
+# tree, so a Linux binary never lands in your checkout and nothing needs gitignoring.
+root = "."
+tmp_dir = "/tmp/air"
+
+[build]
+  cmd = "go build -o /tmp/air/api ./cmd/api"
+  entrypoint = ["/tmp/air/api", "serve"]
+  # .sql and .json because migrations and the OpenAPI documents are embedded in the binary.
+  include_ext = ["go", "sql", "json"]
+  exclude_dir = ["docker", "scripts", "queries"]
+  exclude_regex = ["_test\\.go$"]
+  delay = 300
+  # Polling, not file-system events. Events from a macOS or Windows host do not reliably cross
+  # Docker Desktop's bind mount into the container, and a watcher that silently never fires looks
+  # exactly like a server that is running your old code. The tree is small; a scan is cheap.
+  poll = true
+  poll_interval = 500
+  # SIGINT first, so the server drains exactly as it does on SIGTERM in production.
+  send_interrupt = true
+  kill_delay = "5s"
+  stop_on_error = true
+
+[log]
+  time = false
+
+[misc]
+  clean_on_exit = true

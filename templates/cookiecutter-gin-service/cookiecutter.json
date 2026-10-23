@@ -1,0 +1,16 @@
+{
+  "project_name": "Example Service",
+  "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '-').replace('_', '-') }}",
+  "description": "A Gin service built to the Engineering Athena handbook.",
+  "author": "Your Name",
+  "go_module": "github.com/your-org/{{ cookiecutter.project_slug }}",
+  "go_version": "1.27",
+  "gcp_project_id": "your-gcp-project",
+  "gcp_region": "europe-west1",
+  "github_repository": "your-org/{{ cookiecutter.project_slug }}",
+  "use_postgres": ["yes", "no"],
+  "use_sentry": ["yes", "no"],
+  "_copy_without_render": [
+    ".github/workflows/*"
+  ]
+}

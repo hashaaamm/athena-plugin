@@ -1,0 +1,20 @@
+# golangci-lint v2, for the Pulumi program only. backend/ has its own configuration and its own
+# layer rules; nothing here is shared with it, because the two modules share nothing else either.
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused. errcheck earns its place here in particular:
+  # a swallowed error from a resource constructor is a resource missing from the stack, found at
+  # apply time rather than at review.
+  default: standard
+  enable:
+    - errorlint
+    - gocritic
+    - misspell
+    - nolintlint
+    - unconvert
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

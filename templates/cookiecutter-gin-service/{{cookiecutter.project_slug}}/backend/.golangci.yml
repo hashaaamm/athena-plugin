@@ -1,0 +1,174 @@
+# golangci-lint v2. `just lint` runs it in the dev container; CI runs the same version. The layer
+# rules below are mechanical, not advisory — a violation fails the build, so review does not have to
+# catch it. Ask Athena for the layered architecture rules and the Go tooling notes.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  # The tag every build uses (docker/Dockerfile.dev explains it). Linted without it, the analysis
+  # would compile — and judge — code the binary never contains.
+  build-tags:
+    - nomsgpack
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose       # an unclosed response body leaks a connection per call
+    - depguard        # the layer rules and banned libraries, below
+    - errorlint       # errors.Is/As, never ==, on wrapped errors
+    - forbidigo       # environment reads outside internal/config
+    - gosec
+    - misspell
+    - nilerr          # `if err != nil { return nil }` is almost always a bug
+    - noctx           # every outbound request carries a context, so it can be cancelled
+    - nolintlint      # a //nolint must name its linter and say why
+    - revive
+    - sloglint        # consistent key-value pairs; no mixing attrs and pairs
+    - unconvert
+    - usestdlibvars   # http.MethodPost, http.StatusOK — not string and int literals
+  settings:
+    depguard:
+      rules:
+        # The handbook bans these for new Go code. Each entry says what to use instead.
+        banned-libraries:
+          list-mode: lax
+          files: ["$all"]
+          allow:
+            - github.com/golang-jwt/jwt/v5
+          deny:
+            - pkg: github.com/dgrijalva/jwt-go
+              desc: unmaintained, with an open alg-confusion advisory; use github.com/golang-jwt/jwt/v5
+            - pkg: github.com/golang-jwt/jwt
+              desc: only /v5 is approved — v3 and v4 lack the parser options internal/security relies on
+            - pkg: github.com/lib/pq
+              desc: pgx is the driver, and a second Postgres driver is two connection behaviours to reason about
+            - pkg: github.com/golang/mock
+              desc: archived; tests here run against a real Postgres, and a hand-written fake beats a generated mock
+
+        # Only the repository layer touches the database. The exceptions are named, not globbed:
+        # internal/app is the composition root and builds the pool (and the migrate job's handle);
+        # internal/testdb is the suite's harness and creates schemas; the migrations' own test reads
+        # the catalogue to check every constraint name. Another entry here is a design smell worth
+        # arguing about in review.
+        data-access-is-in-the-repository:
+          files:
+            - "$all"
+            - "!**/internal/repository/**"
+            - "!**/internal/db/**"
+            - "!**/internal/app/**"
+            - "!**/internal/testdb/**"
+            - "!**/migrations/migrations_test.go"
+          deny:
+            - pkg: "{{ cookiecutter.go_module }}/internal/db"
+              desc: only internal/repository imports the sqlc layer
+            - pkg: github.com/jackc/pgx
+              desc: only internal/repository talks to the database (internal/app builds the pool)
+
+        # A handler binds, calls one service method, and writes. It never reaches past the service.
+        handlers-call-services:
+          files: ["**/internal/http/**"]
+          deny:
+            - pkg: "{{ cookiecutter.go_module }}/internal/repository"
+              desc: a handler calls a service; the service calls the repository
+            - pkg: github.com/pressly/goose
+              desc: migrations run from the migrate subcommand, never from a request
+
+        # A service must be callable from a worker, a CLI or a test with no HTTP stack anywhere.
+        services-know-no-transport:
+          files: ["**/internal/service/**"]
+          deny:
+            - pkg: github.com/gin-gonic/gin
+              desc: services return apperr values; the transport decides the response
+            - pkg: net/http
+              desc: services return apperr values, never status codes or requests
+            - pkg: "{{ cookiecutter.go_module }}/internal/http"
+              desc: the flow is handler -> service, never back
+
+        # The repository knows rows, not requests or use cases.
+        repositories-know-no-callers:
+          files: ["**/internal/repository/**"]
+          deny:
+            - pkg: github.com/gin-gonic/gin
+              desc: the repository knows rows, not requests
+            - pkg: net/http
+              desc: the repository knows rows, not requests
+            - pkg: "{{ cookiecutter.go_module }}/internal/service"
+              desc: the flow is service -> repository, never back
+            - pkg: "{{ cookiecutter.go_module }}/internal/http"
+              desc: the flow is handler -> service -> repository, never back
+
+        # The composition root is built in one place.
+        nothing-imports-the-composition-root:
+          files: ["$all", "!**/cmd/**", "!**/internal/app/**"]
+          deny:
+            - pkg: "{{ cookiecutter.go_module }}/internal/app$"
+              desc: internal/app builds the graph; nothing below it may depend on it
+
+        # Configuration is read in one place, so validation sees every variable.
+        only-config-parses-the-environment:
+          files: ["$all", "!**/internal/config/**"]
+          deny:
+            - pkg: github.com/caarlos0/env
+              desc: read configuration through internal/config
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^os\.(Getenv|LookupEnv|Environ|ExpandEnv)$
+          msg: read configuration through internal/config, the only place the environment is read
+
+    gosec:
+      excludes:
+        - G104 # unhandled errors: errcheck owns this, and reporting it twice trains people to ignore both
+
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: indent-error-flow
+        - name: errorf
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: receiver-naming
+        - name: increment-decrement
+        - name: unexported-return
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: range
+        - name: blank-imports
+        - name: dot-imports
+
+    sloglint:
+      kv-only: true
+      context: scope
+
+  exclusions:
+    # internal/db is sqlc's output and docs/ is generated: lint the inputs, not the output.
+    generated: lax
+    presets:
+      - std-error-handling
+    rules:
+      - path: internal/config/
+        linters: [forbidigo]
+      # Tests deliberately build tokens with weak keys, write files and ignore some errors.
+      - path: _test\.go
+        linters: [gosec, noctx]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      # Standard library, then third party, then this module — the grouping every file here uses.
+      local-prefixes:
+        - {{ cookiecutter.go_module }}

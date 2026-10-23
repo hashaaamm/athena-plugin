@@ -1,0 +1,144 @@
+# Root orchestrator. Recipe names are identical in every repository — an engineer or agent should
+# never have to read a justfile to know how to run the tests.
+# Ask Athena for the local development and command runner rules.
+#
+# This justfile owns the things that span components (the stack, CI's gate) and DELEGATES
+# everything language-specific to backend/justfile, and everything about the cloud to
+# infra/justfile. Another component is another delegation line — the command vocabulary here never
+# grows.
+{% raw %}
+set shell := ["bash", "-uc"]
+
+compose := "docker compose"
+ci      := "docker compose -f docker-compose.ci.yml"
+backend := "just --justfile backend/justfile --working-directory backend"
+infra   := "just --justfile infra/justfile --working-directory infra"
+
+# Show available recipes
+default:
+    @just --list
+
+# --- The stack -----------------------------------------------------------
+
+# Start the full local stack with hot reload
+dev: _env
+    {{compose}} up --build
+
+# Stop the stack and remove volumes
+down:
+    {{compose}} down -v
+    -{{ci}} down -v
+
+# Tail logs for a service (default: backend)
+logs SERVICE="backend":
+    {{compose}} logs -f {{SERVICE}}
+
+# Open a shell in the tooling container
+shell: _env
+    {{compose}} run --rm dev-runner bash
+
+# Create .env on first run. `just dev` from a clean clone must not need a manual step.
+# Every recipe that reaches docker compose depends on this, because compose reads the root `.env`
+# and a freshly generated project does not have one. Without it `just check` — the first command
+# anybody runs on a new project — fails on a missing env file rather than on anything about their
+# code.
+_env:
+    @test -f .env || (cp .env.example .env && echo "created .env from .env.example")
+
+# --- Quality -------------------------------------------------------------
+
+# Everything CI runs, in CI's order. If this passes, the pipeline passes.
+check: _env lint gen-check test
+
+# Lint, vet and layer rules (golangci-lint with depguard)
+lint: _env
+    {{backend}} lint
+
+# Apply formatting and safe autofixes
+fmt: _env
+    {{backend}} fmt
+
+# Run the full test suite against a real Postgres
+test *ARGS: _env
+    {{backend}} test {{ARGS}}
+
+# Run one package or test, verbose and fail-fast: `just test-one ./internal/service -run TestLogin`
+test-one *ARGS: _env
+    {{backend}} test-one {{ARGS}}
+
+# Dependency vulnerability scan
+audit: _env
+    {{backend}} audit
+
+# --- Generated code ------------------------------------------------------
+
+# Regenerate sqlc queries, the Swagger document and its OpenAPI 3 conversion
+gen: _env
+    {{backend}} gen
+
+# Fail if anything generated is out of date — the check CI runs
+gen-check: _env
+    {{backend}} gen-check
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# --- Database ------------------------------------------------------------
+
+# Apply all migrations
+db-migrate: _env
+    {{backend}} db-migrate
+
+# Create a new SQL migration: `just db-new create_invoices`
+db-new NAME: _env
+    {{backend}} db-new {{NAME}}
+
+# Roll back one migration
+db-rollback: _env
+    {{backend}} db-rollback
+
+# Show which migrations have run
+db-status: _env
+    {{backend}} db-status
+
+# Drop and recreate the local database, then migrate
+db-reset: _env
+    {{backend}} db-reset
+{% endraw %}{% endif %}{% raw %}
+# --- Build ---------------------------------------------------------------
+
+# Build the production image
+build:
+    {{backend}} build
+
+# --- Infrastructure ------------------------------------------------------
+#
+# Separate from `check` on purpose. `check` is the gate for application code; the stack has its own
+# module, its own workflow and its own gate, and pulling it into `check` would make every backend
+# change wait on a Pulumi install. infra/justfile has the reasoning behind each guard.
+
+# Unit-test the Pulumi components. No cloud credentials needed.
+infra-test:
+    {{infra}} test
+
+# Lint and vet the stack
+infra-lint:
+    {{infra}} lint
+
+# Show what `pulumi up` would change
+infra-preview STACK="dev" *FLAGS:
+    {{infra}} preview {{STACK}} {{FLAGS}}
+
+# Creates real, billable resources — read the preview first. Unattended: `just infra-up dev --yes`
+infra-up STACK="dev" *FLAGS:
+    {{infra}} up {{STACK}} {{FLAGS}}
+
+# Copy stack outputs into GitHub repository variables, which un-gates cd.yml
+infra-sync-github STACK="dev":
+    {{infra}} sync-github {{STACK}}
+
+# Destroy everything the stack created. Prompts, for the same reason `infra-up` does.
+infra-destroy STACK="dev" *FLAGS:
+    {{infra}} destroy {{STACK}} {{FLAGS}}
+
+# Delete the state bucket and KMS key, which `destroy` cannot. Refuses unless every stack is empty
+infra-teardown:
+    {{infra}} teardown
+{% endraw %}

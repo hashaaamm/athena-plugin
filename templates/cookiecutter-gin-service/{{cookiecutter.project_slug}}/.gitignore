@@ -1,0 +1,17 @@
+# Go
+/backend/bin/
+/backend/tmp/
+*.test
+*.out
+coverage.*
+
+# Local environment. `.env.example` is tracked; `.env` never is.
+# Ask Athena for the secrets-management rules.
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

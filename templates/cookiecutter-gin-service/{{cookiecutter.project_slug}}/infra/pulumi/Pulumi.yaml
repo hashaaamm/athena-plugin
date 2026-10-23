@@ -1,0 +1,17 @@
+name: {{ cookiecutter.project_slug }}
+# Go, the service's own language. Pulumi compiles main.go in this directory with the Go toolchain
+# on the machine running it, so `go` and `pulumi` are the two host prerequisites — infra/README.md.
+runtime: go
+description: Infrastructure for {{ cookiecutter.project_name }}.
+
+# Self-managed state in GCS, created by infra/bootstrap/state-bucket.sh before the first `up`.
+# Not Pulumi Cloud: a bucket in the same project is one fewer vendor relationship, and the house
+# rule is that state lives in a bucket the program does not create, versioned and KMS-encrypted.
+backend:
+  url: gs://{{ cookiecutter.gcp_project_id }}-pulumi-state
+
+config:
+  # One explicit provider, configured in main.go. A default provider would pick up ambient gcloud
+  # configuration and make two machines plan differently.
+  pulumi:disable-default-providers:
+    value: ["gcp"]

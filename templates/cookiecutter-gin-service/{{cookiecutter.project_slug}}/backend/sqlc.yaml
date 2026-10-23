@@ -1,0 +1,36 @@
+# sqlc generates internal/db from queries/ against the schema the migrations build. Generated code is
+# committed and CI fails when it is stale (`just gen-check`), so a query and its Go signature cannot
+# drift apart in a PR. Ask Athena for the database access and migrations rules.
+#
+# Regenerate with `just gen`. Never edit internal/db by hand.
+version: "2"
+sql:
+  - engine: postgresql
+    # The goose migrations ARE the schema. sqlc reads the Up sections and ignores the Down ones, so
+    # there is no second schema file to keep in step with them.
+    schema: migrations
+    queries: queries
+    gen:
+      go:
+        package: db
+        out: internal/db
+        sql_package: pgx/v5
+        # Rows are internal to the repository layer, which maps them to its own types; JSON tags on
+        # them would invite handing a row — digest and all — straight to an encoder.
+        emit_json_tags: false
+        emit_interface: false
+        emit_empty_slices: true
+        overrides:
+          # One UUID type across the codebase, rather than pgtype.UUID in the data layer and
+          # google/uuid everywhere else.
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: pg_catalog.timestamptz
+            go_type: time.Time
+          # Nullable timestamps as *time.Time: nil is "never", which is what revoked_at means.
+          - db_type: pg_catalog.timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true

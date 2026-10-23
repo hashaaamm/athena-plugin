@@ -1,0 +1,17 @@
+# Fast, deterministic checks only. Linting the whole module, tests and code generation belong in
+# `just check` and CI — a slow hook gets bypassed with --no-verify, and then so do the useful ones.
+# Ask Athena for the local development and command runner rules.
+repos:
+  # gofmt + goimports, configured by backend/.golangci.yml so the hook and `just fmt` agree on the
+  # import grouping. pre-commit builds the hook with its own Go toolchain, so the host needs none.
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v2.15.0
+    hooks:
+      - id: golangci-lint-fmt
+        args: [--config=backend/.golangci.yml]
+        files: ^backend/.*\.go$
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.23.1
+    hooks:
+      - id: gitleaks

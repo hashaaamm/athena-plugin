@@ -1,0 +1,222 @@
+# Gates run fastest-first, so a formatting error fails in a minute rather than after the test run.
+# Ask Athena for the CI pipeline rules.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. That is the single most common way these templates break.
+# The consequence: nothing here may contain a cookiecutter variable, and the steps that differ for a
+# project generated without a database guard on the directory instead (`test -d migrations`).
+#
+# Tool versions are pinned here AND in backend/docker/Dockerfile.dev, which is what `just check`
+# runs locally. Bump them together, or local and CI disagree about what "passing" means.
+#
+# Third-party actions: the house rule is a released major version at minimum and a pinned digest
+# for anything that handles credentials. Nothing in this workflow is given a credential beyond the
+# read-only GITHUB_TOKEN, so majors are used; if you add a step that receives a secret, pin that
+# action to `@<sha>` and record the version the digest corresponds to in a comment beside it.
+name: CI
+
+on:
+  pull_request:
+    # Per-component filter. A README-only change should not run the Go suite. A web client added
+    # later gets its own workflow with its own filter, rather than more jobs here — two components
+    # in one workflow means each waits for the other's runner.
+    paths:
+      - 'backend/**'
+      - 'docker-compose*.yml'
+      - '.github/workflows/ci.yml'
+      # The secret scan runs here, so a change to what it allowlists has to re-run it.
+      - '.gitleaks.toml'
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'docker-compose*.yml'
+      - '.github/workflows/ci.yml'
+      - '.gitleaks.toml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+env:
+  # gin's MessagePack codec is never used; every build drops it (backend/docker/Dockerfile.dev).
+  GOFLAGS: -tags=nomsgpack
+  GOLANGCI_LINT_VERSION: v2.15.0
+  SQLC_VERSION: 1.31.1
+  SWAG_VERSION: v1.16.6
+  GOVULNCHECK_VERSION: v1.9.0
+
+jobs:
+  static:
+    name: Lint, layers, generated code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # Fails on a go.sum that does not match what was downloaded, or that is missing: run
+      # `just lock` and commit go.sum.
+      - run: go mod verify
+      # vet, staticcheck, gosec, errcheck, formatting, and the layer rules (depguard) — all in
+      # backend/.golangci.yml, so this step and `just lint` are the same check.
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: backend
+      - uses: sqlc-dev/setup-sqlc@v4
+        with:
+          sqlc-version: ${{ env.SQLC_VERSION }}
+      - run: go install github.com/swaggo/swag/cmd/swag@${SWAG_VERSION}
+      # internal/db (sqlc) and docs/openapi*.json (swag + cmd/openapi) must match their inputs. A
+      # project generated without a database has no sqlc step in the script, so this needs no guard.
+      - name: Generated code is up to date
+        run: bash scripts/gen.sh --check
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: [static]
+    services:
+      # Started for every project, used only by those generated with a database. Service containers
+      # cannot be conditional on the repository's contents, and an idle Postgres costs seconds.
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: test
+        ports: ['5432:5432']
+        # Service containers cannot take a `command`, so fsync stays on here; the compose overlay
+        # used locally does the tmpfs trick instead.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      ENVIRONMENT: test
+      JSON_LOGS: 'false'
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: '5432'
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: test
+      SENTRY_DSN: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # -race: the auth path has a semaphore, a lazily computed digest and a shared pool, and a data
+      # race in any of them is a bug no assertion catches.
+      # -coverpkg=./... credits a handler with the lines the router tests in internal/app run, which
+      # is where handlers are tested; the last line printed is the module's total.
+      - run: |
+          go test -race -coverpkg=./... -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -n 1
+
+  audit:
+    name: Vulnerability audit
+    runs-on: ubuntu-latest
+    needs: [static]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # Reports only vulnerabilities in code the binary can actually reach — not every advisory
+      # against every module in go.sum, which is the noise that gets audits switched off.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # full history, not just the diff
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  smoke:
+    name: Smoke (the built binary serves)
+    runs-on: ubuntu-latest
+    needs: [test]
+    services:
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # `staging`, not `test`: the deployed code path — placeholder credentials refused, the
+      # signing-key check on — with the docs still served so they can be checked.
+      ENVIRONMENT: staging
+      PORT: '8080'
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: '5432'
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: test
+      JWT_SECRET: smoke-test-signing-key-that-is-long-enough-0123456789
+      SENTRY_DSN: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # Built the way the production image builds it.
+      - run: CGO_ENABLED=0 go build -mod=readonly -trimpath -o api ./cmd/api
+      - name: Migrate
+        run: test ! -d migrations || ./api migrate up
+      - name: Serve, probe, stop
+        run: |
+          set -euo pipefail
+          ./api serve > server.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; cat server.log' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/health/live >/dev/null && break
+            sleep 1
+          done
+          ./api healthcheck
+          curl -fsS http://127.0.0.1:8080/health/ready
+          # Downloaded to files rather than piped into grep: `grep -q` closes the pipe on the first
+          # match and, under pipefail, the curl it killed fails a check that had passed.
+          curl -fsS -o openapi.json http://127.0.0.1:8080/openapi.json
+          grep -q '"openapi": "3' openapi.json
+          curl -fsSL -o docs.html http://127.0.0.1:8080/docs
+          grep -qi 'swagger' docs.html
+          # Deny by default: the private group answers 401, with the scheme, without a token.
+          if test -d migrations; then
+            code=$(curl -s -D headers.txt -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/auth/me)
+            test "$code" = 401
+            grep -qi '^www-authenticate: Bearer' headers.txt
+          fi
+          # SIGTERM drains and exits cleanly — what Cloud Run sends on every revision swap.
+          kill -TERM "$pid"
+          wait "$pid"
