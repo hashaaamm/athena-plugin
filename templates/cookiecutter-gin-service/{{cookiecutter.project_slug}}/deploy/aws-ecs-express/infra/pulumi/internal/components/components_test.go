@@ -71,8 +71,7 @@ func identities(t *testing.T) *infratest.Recorder {
 	t.Helper()
 	return run(t, func(ctx *pulumi.Context) error {
 		_, err := components.NewIdentities(ctx, cfg, components.IdentitiesArgs{
-			SecretARNs:          []pulumi.StringOutput{pulumi.String("arn:secret:one").ToStringOutput()},
-			GeneratedSecretARNs: []pulumi.StringOutput{pulumi.String("arn:secret:one").ToStringOutput()},
+			SecretARNs: []pulumi.StringOutput{pulumi.String("arn:secret:one").ToStringOutput()},
 		})
 		return err
 	})
@@ -148,8 +147,7 @@ func TestBothRolesTrustTheImmutableSubjectWhenItIsConfigured(t *testing.T) {
 	immutable.GitHubSubjectPrefix = "repo:acme@123/billing-api@456"
 	rec := run(t, func(ctx *pulumi.Context) error {
 		_, err := components.NewIdentities(ctx, immutable, components.IdentitiesArgs{
-			SecretARNs:          []pulumi.StringOutput{pulumi.String("arn:secret:one").ToStringOutput()},
-			GeneratedSecretARNs: []pulumi.StringOutput{pulumi.String("arn:secret:one").ToStringOutput()},
+			SecretARNs: []pulumi.StringOutput{pulumi.String("arn:secret:one").ToStringOutput()},
 		})
 		return err
 	})
@@ -194,7 +192,7 @@ func TestThePreviewRoleWritesNothingButItsOwnLocks(t *testing.T) {
 						t.Errorf("%s on %s, outside this project's locks", action, resource)
 					}
 				}
-			case "s3:GetObject", "s3:ListBucket", "kms:Decrypt", "kms:GenerateDataKey", "secretsmanager:GetSecretValue":
+			case "s3:GetObject", "s3:ListBucket", "kms:Decrypt", "kms:GenerateDataKey":
 			default:
 				t.Errorf("the preview role may %s", action)
 			}
@@ -212,22 +210,14 @@ func TestThePreviewRoleWritesNothingButItsOwnLocks(t *testing.T) {
 	}
 }
 
-func TestThePreviewReadsOnlyTheSecretsTheStackGenerated(t *testing.T) {
-	// Refresh reads a SecretVersion's value; those values are already in state. A manual secret's
-	// value is not, and must stay out of the preview's reach.
-	rec := run(t, func(ctx *pulumi.Context) error {
-		_, err := components.NewIdentities(ctx, cfg, components.IdentitiesArgs{
-			SecretARNs: []pulumi.StringOutput{
-				pulumi.String("arn:generated").ToStringOutput(), pulumi.String("arn:manual").ToStringOutput(),
-			},
-			GeneratedSecretARNs: []pulumi.StringOutput{pulumi.String("arn:generated").ToStringOutput()},
-		})
-		return err
-	})
+func TestThePreviewReadsNoSecretValue(t *testing.T) {
+	// The stack writes no secret value, so a refresh reads none, and a pull request's preview has
+	// no business with one. GetSecretValue on any secret would be a value the state never held.
+	rec := identities(t)
 	for _, statement := range statements(t, rec.Find(t, policyType, "preview-reads-state").Inputs["policy"]) {
-		if slices.Contains(strs(infratest.Get(statement, "Action")), "secretsmanager:GetSecretValue") {
-			if got := strs(infratest.Get(statement, "Resource")); !slices.Equal(got, []string{"arn:generated"}) {
-				t.Errorf("the preview may read %v", got)
+		for _, action := range strs(infratest.Get(statement, "Action")) {
+			if strings.HasPrefix(action, "secretsmanager:") {
+				t.Errorf("the preview role may %s on %v", action, infratest.Get(statement, "Resource"))
 			}
 		}
 	}
@@ -274,7 +264,7 @@ func TestTheDeployRoleCanReachOnlyThisStacksRepositoriesAndServices(t *testing.T
 func TestEveryRoleNameFitsIAMsLimit(t *testing.T) {
 	long := cfg
 	long.Slug = "a-very-long-service-name-that-goes-on-and-on-and-on-for-ever"
-	for _, role := range []string{"ecs-infra", "exec", "runtime", "deploy", "preview"} {
+	for _, role := range []string{"ecs-infra", "exec", "migrate-exec", "runtime", "deploy", "preview"} {
 		name, err := long.RoleName(role)
 		if err != nil {
 			t.Fatal(err)
@@ -304,9 +294,10 @@ func TestTheTaskRolesCanOnlyBeAssumedByTasksInThisAccount(t *testing.T) {
 	}
 }
 
-func TestTheRuntimeRoleHoldsNothing(t *testing.T) {
+func TestWithoutADatabaseTheRuntimeRoleHoldsNothing(t *testing.T) {
 	// The application's own identity starts empty; a grant is added when the application needs
-	// one, on purpose, in review.
+	// one, on purpose, in review. With a database, its one grant is rds-db:connect — see
+	// database_test.go.
 	rec := identities(t)
 	runtime := rec.Find(t, roleType, "runtime-role")
 	for _, attachment := range rec.OfType("aws:iam/rolePolicyAttachment:RolePolicyAttachment") {
@@ -391,9 +382,9 @@ func TestTheServiceLogsToTheStacksOwnGroup(t *testing.T) {
 
 func TestAServiceRefusesASecretItWasNeverGiven(t *testing.T) {
 	args := backendArgs()
-	args.SecretEnv = map[string]string{"DATABASE_URL_OVERRIDE": "typo"}
+	args.SecretEnv = map[string]string{"JWT_SECRET": "typo"}
 	args.SecretRefs = map[string]components.SecretRef{
-		"database-url": {ARN: pulumi.String("x"), VersionID: pulumi.String("1")},
+		"jwt-secret": {ARN: pulumi.String("x"), VersionID: pulumi.String("1")},
 	}
 	_, err := infratest.TryRun(slug, nil, func(ctx *pulumi.Context) error {
 		_, err := components.NewService(ctx, cfg, args)
@@ -448,59 +439,81 @@ func TestTheEndpointBecomesAnHTTPSURLOnce(t *testing.T) {
 
 // --- Secrets ----------------------------------------------------------------------------------
 
-func TestEverySecretWithoutAVersionIsDeclaredManual(t *testing.T) {
+func TestTheStackCreatesEverySecretEmptyAndWritesNoValue(t *testing.T) {
+	// Pulumi standards MUST-3: a secret value is never in the program, its configuration or its
+	// state. So the stack makes secrets and never a version — not even of a value it could have
+	// generated, because a generated value is in state like any other.
+	var secrets *components.Secrets
+	rec := run(t, func(ctx *pulumi.Context) error {
+		var err error
+		secrets, err = components.NewSecrets(ctx, cfg, components.SecretsArgs{})
+		return err
+	})
+	if versions := rec.OfType("aws:secretsmanager/secretVersion:SecretVersion"); len(versions) != 0 {
+		t.Errorf("the stack writes %d secret versions", len(versions))
+	}
+	if len(secrets.ARNs) != len(components.SecretNames) {
+		t.Errorf("%d secrets for %d secret names", len(secrets.ARNs), len(components.SecretNames))
+	}
+	if len(secrets.Refs) != 0 {
+		t.Errorf("references %v before any VersionId is configured", secrets.Refs)
+	}
+}
+
+func TestAConfiguredVersionIsPinnedAndAnEmptyOneIsNotMounted(t *testing.T) {
+	if len(components.SecretNames) == 0 {
+		t.Skip("this service has no secrets")
+	}
+	name := components.SecretNames[0]
 	var secrets *components.Secrets
 	run(t, func(ctx *pulumi.Context) error {
 		var err error
 		secrets, err = components.NewSecrets(ctx, cfg, components.SecretsArgs{
-			Generated: map[string]pulumi.StringInput{"generated-one": pulumi.String("minted-by-the-stack")},
+			Versions: map[string]string{name: "a1b2c3d4-0000-0000-0000-000000000000"},
 		})
 		return err
 	})
-	if len(secrets.Versions) != len(secrets.ARNs)-len(components.ManualSecrets) {
-		t.Errorf("%d versions for %d secrets and %d manual secrets",
-			len(secrets.Versions), len(secrets.ARNs), len(components.ManualSecrets))
-	}
-	for _, name := range components.ManualSecrets {
-		if _, ok := secrets.Refs[name]; ok {
-			t.Errorf("manual secret %s has a reference before anybody populated it", name)
-		}
+	if _, ok := secrets.Refs[name]; !ok || len(secrets.Refs) != 1 {
+		t.Errorf("references %v; want exactly %s", secrets.Refs, name)
 	}
 }
 
-func TestAGeneratedSecretValueIsMarkedSecret(t *testing.T) {
-	rec := run(t, func(ctx *pulumi.Context) error {
-		_, err := components.NewSecrets(ctx, cfg, components.SecretsArgs{
-			Generated: map[string]pulumi.StringInput{"token": pulumi.String("value")},
-		})
-		return err
+func TestASecretReferenceNamesItsVersionOrDeliberatelyNot(t *testing.T) {
+	// `<arn>:<json-key>::<version-id>`. The stage is never named; the version is, except for the
+	// RDS-managed master secret, which RDS rotates and a pin would break.
+	var pinned, whole, managed string
+	run(t, func(ctx *pulumi.Context) error {
+		infratest.Capture(ctx, "pinned", components.SecretRef{ARN: pulumi.String("arn:s"), VersionID: pulumi.String("v1")}.ValueFrom(), &pinned)
+		infratest.Capture(ctx, "whole", components.SecretRef{ARN: pulumi.String("arn:s"), VersionID: pulumi.String("v1"), JSONKey: "k"}.ValueFrom(), &whole)
+		infratest.Capture(ctx, "managed", components.RDSManagedKey(pulumi.String("arn:s"), "password").ValueFrom(), &managed)
+		return nil
 	})
-	version := rec.Find(t, "aws:secretsmanager/secretVersion:SecretVersion", "token-version")
-	if version.Inputs["secretString"] != "value" {
-		t.Fatalf("secretString = %v", version.Inputs["secretString"])
-	}
-	if !slices.Contains(version.Secret, "secretString") {
-		t.Error("secretString reaches the provider as plaintext rather than as a secret")
+	got := []string{pinned, whole, managed}
+	want := []string{"arn:s:::v1", "arn:s:k::v1", "arn:s:password::"}
+	if !slices.Equal(got, want) {
+		t.Errorf("ValueFrom = %q, want %q", got, want)
 	}
 }
 
 func TestASecretIsDeletedAtOnceOutsideProductionAndRecoverableInIt(t *testing.T) {
 	// A non-zero window outside production reserves the name for a month, and the next `up`
 	// after a destroy fails on it.
+	if len(components.SecretNames) == 0 {
+		t.Skip("this service has no secrets")
+	}
+	name := components.SecretNames[0]
 	for env, want := range map[string]float64{"dev": 0, "prod": components.RecoveryWindowDays} {
 		c := cfg
 		c.Environment = env
 		rec := run(t, func(ctx *pulumi.Context) error {
-			_, err := components.NewSecrets(ctx, c, components.SecretsArgs{
-				Generated: map[string]pulumi.StringInput{"token": pulumi.String("value")},
-			})
+			_, err := components.NewSecrets(ctx, c, components.SecretsArgs{})
 			return err
 		})
-		secret := rec.Find(t, "aws:secretsmanager/secret:Secret", "token")
+		secret := rec.Find(t, "aws:secretsmanager/secret:Secret", name)
 		if got := secret.Inputs["recoveryWindowInDays"]; got != want {
 			t.Errorf("%s: recoveryWindowInDays = %v, want %v", env, got, want)
 		}
-		if got := secret.Inputs["name"]; got != slug+"-token-"+env {
+		if got := secret.Inputs["name"]; got != slug+"-"+name+"-"+env {
 			t.Errorf("%s: name = %v", env, got)
 		}
 	}

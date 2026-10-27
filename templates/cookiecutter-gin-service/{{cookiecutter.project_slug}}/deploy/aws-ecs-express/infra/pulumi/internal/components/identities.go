@@ -40,22 +40,37 @@ const (
 
 // IdentitiesArgs is what Identities needs beyond the configuration.
 type IdentitiesArgs struct {
-	// SecretARNs is every secret a task mounts. The execution role may read exactly these.
+	// SecretARNs is every secret the service mounts. Its execution role may read exactly these.
 	SecretARNs []pulumi.StringOutput
-	// GeneratedSecretARNs is the subset whose value the stack writes; the preview role reads
-	// these on refresh.
-	GeneratedSecretARNs []pulumi.StringOutput
+{%- if cookiecutter.use_postgres == "yes" %}
+
+	// MasterSecretARN is the secret RDS keeps the master login in. Only the migration task's
+	// execution role may read it.
+	MasterSecretARN pulumi.StringInput
+
+	// DatabaseResourceID and DatabaseAppRole name the one database user the runtime role may
+	// connect as: arn:<partition>:rds-db:<region>:<account>:dbuser:<resource-id>/<role>.
+	DatabaseResourceID pulumi.StringInput
+	DatabaseAppRole    string
+{%- endif %}
 }
 
 // Identities is every IAM role in the stack, and who may assume each.
 //
-// Five roles, and the split is the point. ECS gets two kinds: the INFRASTRUCTURE role, which Express
+// The roles, and the split is the point. ECS gets two kinds: the INFRASTRUCTURE role, which Express
 // Mode uses to build the load balancer, target groups and scaling policies on your behalf, and an
-// EXECUTION role per service, which pulls the image, writes logs and resolves secrets before the
-// container starts. The application gets a RUNTIME role of its own — the AWS identity its code
-// runs as — which holds nothing at all until the application needs something. CI gets two, keyless:
-// a DEPLOY role that can push an image and roll a service and nothing else, and a PREVIEW role that
-// can read the account and this project's state and change nothing.
+// EXECUTION role per task, which pulls the image, writes logs and resolves secrets before the
+// container starts.
+{%- if cookiecutter.use_postgres == "yes" %} The migration task has an execution role of its own, because it is
+// the only task that may read the database's master password. The application gets a RUNTIME role
+// of its own — the AWS identity its code runs as — which holds one grant, rds-db:connect as its
+// own database user, until the application needs something more.
+{%- else %} The application gets a RUNTIME role of its own — the AWS
+// identity its code runs as — which holds nothing at all until the application needs something.
+{%- endif %}
+//
+// CI gets two roles, keyless: a DEPLOY role that can push an image and roll a service and nothing
+// else, and a PREVIEW role that can read the account and this project's state and change nothing.
 //
 // Neither CI role has a long-lived credential. GitHub Actions exchanges its own OIDC token for a
 // short-lived session, and each role's trust policy says exactly which workflow's token it
@@ -71,6 +86,11 @@ type Identities struct {
 	Runtime        *iam.Role
 	Deploy         *iam.Role
 	Preview        *iam.Role
+{%- if cookiecutter.use_postgres == "yes" %}
+	// MigrateExecution is the migration task's execution role: the backend's, plus the master
+	// secret.
+	MigrateExecution *iam.Role
+{%- endif %}
 
 	// ServiceDependencies is what an Express service must depend on: the infrastructure role's
 	// policy attachment, and the backend execution role's grants. AWS documents the first — delete
@@ -78,6 +98,11 @@ type Identities struct {
 	// longer tear down what it built. The second is the same race on the way up: a task whose
 	// execution role cannot yet read its secrets fails to start.
 	ServiceDependencies []pulumi.Resource
+{%- if cookiecutter.use_postgres == "yes" %}
+
+	// MigrateDependencies is the same race for the migration task: its execution role's grants.
+	MigrateDependencies []pulumi.Resource
+{%- endif %}
 }
 
 // NewIdentities creates the roles, their trust policies and their grants. The deploy role's
@@ -131,13 +156,60 @@ func NewIdentities(
 		c.ServiceDependencies = append(c.ServiceDependencies, read)
 	}
 
-	// The application's own identity, with no policy at all. This is where an S3 grant goes when
-	// the application needs a bucket: an iam.RolePolicy on this role, scoped to that bucket. Not
-	// on the execution role — that one is ECS's, it acts before the container starts, and
-	// anything granted to it is granted to every task that pulls with it.
+{%- if cookiecutter.use_postgres == "yes" %}
+
+	// The migration task's own execution role: the same managed policy, and the master secret —
+	// the only role in the stack that may read it. Separate so that the backend's execution role
+	// cannot: a compromise of anything that runs as the service never reaches the schema owner's
+	// password. No kms:Decrypt grant: RDS encrypts the secret with the account's aws/secretsmanager
+	// key, whose key policy lets Secrets Manager decrypt for any principal in the account that may
+	// call GetSecretValue. Name a customer-managed key on the instance and this role needs
+	// kms:Decrypt on it as well.
+	if c.MigrateExecution, err = c.role(ctx, cfg, opts, "migrate-execution-role", "migrate-exec", pulumi.String(tasks)); err != nil {
+		return nil, err
+	}
+	if attachment, err = c.attach(ctx, cfg, opts, "migrate-execution-managed", c.MigrateExecution, ExecutionPolicy); err != nil {
+		return nil, err
+	}
+	c.MigrateDependencies = append(c.MigrateDependencies, attachment)
+	readMaster, err := iam.NewRolePolicy(ctx, "migrate-execution-reads-master-secret", &iam.RolePolicyArgs{
+		Role: c.MigrateExecution.Name,
+		Name: pulumi.String("read-database-master-secret"),
+		Policy: DocumentOf(func(arns []string) []Statement {
+			return []Statement{Allow("ReadDatabaseMasterSecret", []string{"secretsmanager:GetSecretValue"}, arns...)}
+		}, args.MasterSecretARN),
+	}, child(c, opts)...)
+	if err != nil {
+		return nil, err
+	}
+	c.MigrateDependencies = append(c.MigrateDependencies, readMaster)
+{%- endif %}
+
+	// The application's own identity. This is where a grant goes when the application needs
+	// something — an S3 bucket is an iam.RolePolicy on this role, scoped to that bucket. Not on the
+	// execution role — that one is ECS's, it acts before the container starts, and anything granted
+	// to it is granted to every task that pulls with it.
 	if c.Runtime, err = c.role(ctx, cfg, opts, "runtime-role", "runtime", pulumi.String(tasks)); err != nil {
 		return nil, err
 	}
+{%- if cookiecutter.use_postgres == "yes" %}
+	// IAM database authentication: the service may sign a token for its own database user on this
+	// instance, and for no other user and no other instance. RDS checks the token against exactly
+	// this ARN when the connection opens.
+	if args.DatabaseResourceID != nil {
+		connect, err := iam.NewRolePolicy(ctx, "runtime-connects-to-database", &iam.RolePolicyArgs{
+			Role: c.Runtime.Name,
+			Name: pulumi.String("connect-as-app-role"),
+			Policy: DocumentOf(func(v []string) []Statement {
+				return []Statement{Allow("ConnectAsAppRole", []string{"rds-db:connect"}, DatabaseUserARN(cfg, v[0], args.DatabaseAppRole))}
+			}, args.DatabaseResourceID),
+		}, child(c, opts)...)
+		if err != nil {
+			return nil, err
+		}
+		c.ServiceDependencies = append(c.ServiceDependencies, connect)
+	}
+{%- endif %}
 
 	// --- CI, keyless --------------------------------------------------------------------------
 
@@ -179,13 +251,12 @@ func NewIdentities(
 		KeyId: pulumi.String(StateKeyAlias),
 	}, invokeOpts(opts)...).Arn()
 
-	previewInputs := append([]pulumi.StringInput{stateKey}, stringInputs(args.GeneratedSecretARNs)...)
 	if _, err := iam.NewRolePolicy(ctx, "preview-reads-state", &iam.RolePolicyArgs{
 		Role: c.Preview.Name,
 		Name: pulumi.String("read-own-state"),
 		Policy: DocumentOf(func(v []string) []Statement {
-			return PreviewStatements(cfg, ctx.Project(), v[0], v[1:])
-		}, previewInputs...),
+			return PreviewStatements(cfg, ctx.Project(), v[0])
+		}, stateKey),
 	}, child(c, opts)...); err != nil {
 		return nil, err
 	}
@@ -230,8 +301,8 @@ func GitHubTrust(providerARN, subject string) Statement {
 }
 
 // PreviewStatements is the preview role's access to this project's state, and to nothing else
-// that could not already be read.
-func PreviewStatements(cfg stackconfig.StackConfig, project, stateKeyARN string, generatedSecretARNs []string) []Statement {
+// that could not already be read. No secret value: the stack writes none, so a refresh reads none.
+func PreviewStatements(cfg stackconfig.StackConfig, project, stateKeyARN string) []Statement {
 	bucket := fmt.Sprintf("arn:%s:s3:::%s", cfg.Partition(), cfg.StateBucket())
 	statements := []Statement{
 		// IfExists, because the backend's first call is a HeadBucket — "is the bucket there and
@@ -260,17 +331,16 @@ func PreviewStatements(cfg stackconfig.StackConfig, project, stateKeyARN string,
 		// bucket's default encryption is SSE-KMS, so writing a lock object asks the key for one.
 		Allow("UseStateKey", []string{"kms:Decrypt", "kms:GenerateDataKey"}, stateKeyARN),
 	}
-	if len(generatedSecretARNs) > 0 {
-		// Refreshing a secretsmanager.SecretVersion reads its value — that is how the provider
-		// tells whether it changed. This is not a new exposure: these are the values the stack
-		// generated, they are already in the state this role can decrypt, and GitHub mints no
-		// OIDC token for a pull request from a fork. Manual secrets — values a human put in, which
-		// are NOT in state — are deliberately not on this list.
-		statements = append(statements, Allow("RefreshGeneratedSecrets",
-			[]string{"secretsmanager:GetSecretValue"}, generatedSecretARNs...))
-	}
 	return statements
 }
+{%- if cookiecutter.use_postgres == "yes" %}
+
+// DatabaseUserARN is the rds-db:connect resource for one database user on one instance. The
+// resource id is the instance's `db-…` id, not its name: RDS keeps it across a rename.
+func DatabaseUserARN(cfg stackconfig.StackConfig, resourceID, user string) string {
+	return fmt.Sprintf("arn:%s:rds-db:%s:%s:dbuser:%s/%s", cfg.Partition(), cfg.Region, cfg.AccountID, resourceID, user)
+}
+{%- endif %}
 
 func (c *Identities) role(
 	ctx *pulumi.Context, cfg stackconfig.StackConfig, opts []pulumi.ResourceOption,

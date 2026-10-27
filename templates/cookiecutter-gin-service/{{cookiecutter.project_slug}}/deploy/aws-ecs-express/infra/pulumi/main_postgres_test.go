@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"{{ cookiecutter.go_module }}/infra/pulumi/internal/infratest"
+	"{{ cookiecutter.go_module }}/infra/pulumi/internal/stackconfig"
 )
 
 const taskDefinitionType = "aws:ecs/taskDefinition:TaskDefinition"
@@ -34,10 +35,15 @@ func TestTheMigrationTaskRunsTheBinarysMigrateCommand(t *testing.T) {
 	}
 }
 
-func TestTheMigrationTaskIsGivenOnlyTheDatabase(t *testing.T) {
+// withSecrets is a stack after `just infra-secrets` has recorded the signing key's VersionId.
+func withSecrets(c *stackconfig.StackConfig) {
+	c.JWTSecretVersion = "a1b2c3d4-0000-0000-0000-000000000000"
+}
+
+func TestTheMigrationTaskIsGivenOnlyTheMasterLogin(t *testing.T) {
 	// It signs nothing. A task holding a credential it never uses is a credential with a second
-	// place to leak from, and this one is the whole of the auth system.
-	s := deployed(t, nil)
+	// place to leak from, and the signing key is the whole of the auth system.
+	s := deployed(t, withSecrets)
 	env := infratest.EnvOf(s.migrateContainer(t))
 	var secrets []string
 	for name, value := range env {
@@ -45,27 +51,96 @@ func TestTheMigrationTaskIsGivenOnlyTheDatabase(t *testing.T) {
 			secrets = append(secrets, name)
 		}
 	}
-	if !slices.Equal(secrets, []string{"DATABASE_URL_OVERRIDE"}) {
-		t.Errorf("the migration task mounts %v, want only DATABASE_URL_OVERRIDE", secrets)
+	slices.Sort(secrets)
+	if !slices.Equal(secrets, []string{"DATABASE_PASSWORD", "DATABASE_USER"}) {
+		t.Errorf("the migration task mounts %v, want only the master login", secrets)
 	}
-	serviceEnv := s.backendEnv(t)
-	for _, name := range []string{"JWT_SECRET", "DATABASE_URL_OVERRIDE"} {
-		if !strings.HasPrefix(serviceEnv[name], "secret:") {
-			t.Errorf("the service does not mount %s from Secrets Manager: %q", name, serviceEnv[name])
-		}
+	if got := s.backendEnv(t)["JWT_SECRET"]; !strings.HasSuffix(got, ":::a1b2c3d4-0000-0000-0000-000000000000") {
+		t.Errorf("JWT_SECRET = %q, want the pinned version", got)
 	}
 }
 
-func TestEverySecretReferencePinsAVersion(t *testing.T) {
-	// `<arn>:::<version-id>`, never the bare ARN, which ECS resolves at AWSCURRENT — a different
-	// value for tasks started either side of a rotation.
+func TestTheMigrationTaskLogsInAsTheMasterFromRDSsOwnSecret(t *testing.T) {
+	// `<arn>:<key>::` — the one unpinned reference, because RDS rotates the secret and a pinned
+	// version would be a password the database no longer accepts.
 	s := deployed(t, nil)
+	env := infratest.EnvOf(s.migrateContainer(t))
+	want := map[string]string{
+		"DATABASE_AUTH":     "password",
+		"DATABASE_HOST":     slug + "-pg-dev.abcdefghijkl." + infratest.Region + ".rds.amazonaws.com",
+		"DATABASE_PORT":     "5432",
+		"DATABASE_NAME":     "app",
+		"DATABASE_USER":     "secret:" + infratest.MasterSecretARN + ":username::",
+		"DATABASE_PASSWORD": "secret:" + infratest.MasterSecretARN + ":password::",
+		"PGSSLMODE":         "require",
+		"DATABASE_APP_ROLE": "app_iam",
+		"DATABASE_APP_AUTH": "rds-iam",
+	}
+	for name, value := range want {
+		if env[name] != value {
+			t.Errorf("%s = %q, want %q", name, env[name], value)
+		}
+	}
+	if _, ok := s.Find(t, taskDefinitionType, "migrate").Inputs["taskRoleArn"]; ok {
+		t.Error("the migration task has a task role")
+	}
+}
+
+func TestTheServiceConnectsAsTheAppRoleWithAnIAMTokenAndNoPassword(t *testing.T) {
+	s := deployed(t, withSecrets)
+	env := s.backendEnv(t)
+	want := map[string]string{
+		"DATABASE_AUTH": "rds-iam",
+		"DATABASE_HOST": slug + "-pg-dev.abcdefghijkl." + infratest.Region + ".rds.amazonaws.com",
+		"DATABASE_PORT": "5432",
+		"DATABASE_NAME": "app",
+		"DATABASE_USER": "app_iam",
+		"AWS_REGION":    infratest.Region,
+	}
+	for name, value := range want {
+		if env[name] != value {
+			t.Errorf("%s = %q, want %q", name, env[name], value)
+		}
+	}
+	for _, name := range []string{"DATABASE_PASSWORD", "DATABASE_URL_OVERRIDE", "PGSSLMODE"} {
+		if _, ok := env[name]; ok {
+			t.Errorf("the service has %s", name)
+		}
+	}
+	// And its task role may connect as exactly that user, on exactly this instance.
+	policy, _ := s.Find(t, "aws:iam/rolePolicy:RolePolicy", "runtime-connects-to-database").Inputs["policy"].(string)
+	if !strings.Contains(policy, ":dbuser:"+infratest.DatabaseResourceID+"/app_iam") {
+		t.Errorf("the runtime role's database grant = %s", policy)
+	}
+}
+
+func TestTheConfiguredAppRoleReachesTheServiceTheMigratorAndTheGrant(t *testing.T) {
+	// One name in three places: the user the service logs in as, the role the migrator creates,
+	// and the user IAM lets the task role connect as. Any two disagreeing is a login that fails.
+	s := deployed(t, func(c *stackconfig.StackConfig) { c.DatabaseAppRole = "orders_api" })
+	if got := s.backendEnv(t)["DATABASE_USER"]; got != "orders_api" {
+		t.Errorf("DATABASE_USER = %q", got)
+	}
+	if got := infratest.EnvOf(s.migrateContainer(t))["DATABASE_APP_ROLE"]; got != "orders_api" {
+		t.Errorf("DATABASE_APP_ROLE = %q", got)
+	}
+	policy, _ := s.Find(t, "aws:iam/rolePolicy:RolePolicy", "runtime-connects-to-database").Inputs["policy"].(string)
+	if !strings.Contains(policy, "/orders_api") {
+		t.Errorf("the runtime role's database grant = %s", policy)
+	}
+}
+
+func TestEveryOtherSecretReferencePinsAVersion(t *testing.T) {
+	// `<arn>:::<version-id>`, never the bare ARN, which ECS resolves at AWSCURRENT — a different
+	// value for tasks started either side of a rotation. RDS's own master secret is the one
+	// exception, and only the migration task mounts it.
+	s := deployed(t, withSecrets)
 	for owner, env := range map[string]map[string]string{
 		"service": s.backendEnv(t),
 		"migrate": infratest.EnvOf(s.migrateContainer(t)),
 	} {
 		for name, value := range env {
-			if !strings.HasPrefix(value, "secret:") {
+			if !strings.HasPrefix(value, "secret:") || strings.HasPrefix(value, "secret:"+infratest.MasterSecretARN+":") {
 				continue
 			}
 			arn, version, ok := strings.Cut(strings.TrimPrefix(value, "secret:"), ":::")
@@ -74,24 +149,47 @@ func TestEverySecretReferencePinsAVersion(t *testing.T) {
 			}
 		}
 	}
-}
-
-func TestTheServiceWaitsForTheSecretVersionsNotJustTheSecrets(t *testing.T) {
-	svc := deployed(t, nil).Find(t, serviceType, slug)
-	for _, version := range []string{"database-url-version", "jwt-secret-version"} {
-		if !slices.ContainsFunc(svc.Dependencies, func(urn string) bool {
-			return strings.HasSuffix(urn, "aws:secretsmanager/secretVersion:SecretVersion::"+version)
-		}) {
-			t.Errorf("the service does not wait for %s", version)
+	for name, value := range s.backendEnv(t) {
+		if strings.Contains(value, infratest.MasterSecretARN) {
+			t.Errorf("the service mounts the master secret as %s", name)
 		}
 	}
 }
 
-func TestTheSigningKeyIsGeneratedAndLongEnough(t *testing.T) {
-	// `serve` refuses a key under 32 characters outside local/test. 48 is the margin.
-	key := deployed(t, nil).Find(t, "random:index/randomPassword:RandomPassword", "jwt-secret")
-	if key.Inputs["length"] != 48.0 {
-		t.Errorf("jwt-secret length = %v", key.Inputs["length"])
+func TestNothingIsMountedUntilItsVersionIsConfigured(t *testing.T) {
+	// The first `up` creates the signing key's secret empty, and a task cannot start on an empty
+	// secret. So the stack mounts it only once `just infra-secrets` has recorded its version, and
+	// says so in secrets_ready, which sync-github.sh checks before it un-gates CD.
+	s := deployed(t, nil)
+	if _, ok := s.backendEnv(t)["JWT_SECRET"]; ok {
+		t.Error("JWT_SECRET is mounted before jwtSecretVersion is set")
+	}
+	if s.exports["secrets_ready"] != "false" {
+		t.Errorf("secrets_ready = %q before the version is set", s.exports["secrets_ready"])
+	}
+	if got := deployed(t, withSecrets).exports["secrets_ready"]; got != "true" {
+		t.Errorf("secrets_ready = %q with the version set", got)
+	}
+}
+
+func TestTheMigrationTaskWaitsForItsExecutionRolesGrants(t *testing.T) {
+	// The same race as the service's: a task whose execution role cannot yet read the master
+	// secret fails to start.
+	task := deployed(t, nil).Find(t, taskDefinitionType, "migrate")
+	if !slices.ContainsFunc(task.Dependencies, func(urn string) bool {
+		return strings.HasSuffix(urn, "aws:iam/rolePolicy:RolePolicy::migrate-execution-reads-master-secret")
+	}) {
+		t.Errorf("the migration task does not wait for its execution role's grant; dependencies = %v", task.Dependencies)
+	}
+}
+
+func TestTheDeployRoleMayPassTheMigrationExecutionRole(t *testing.T) {
+	// cd.yml registers a revision of the migration family, which passes its execution role again.
+	s := deployed(t, nil)
+	policy, _ := s.Find(t, "aws:iam/rolePolicy:RolePolicy", "deploy-permissions").Inputs["policy"].(string)
+	role, _ := s.Find(t, roleType, "migrate-execution-role").Inputs["name"].(string)
+	if !strings.Contains(policy, ":role/"+role+`"`) {
+		t.Errorf("the deploy policy cannot pass %s: %s", role, policy)
 	}
 }
 

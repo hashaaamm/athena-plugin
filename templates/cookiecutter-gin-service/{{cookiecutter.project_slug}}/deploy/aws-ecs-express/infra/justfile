@@ -43,7 +43,18 @@ preview STACK="dev" *FLAGS: (_require "go") (_require "pulumi")
 up STACK="dev" *FLAGS: (_require "go") (_require "pulumi")
     cd pulumi && pulumi up --stack {{STACK}} --refresh {{FLAGS}}
 
-# Copy stack outputs into GitHub repository variables, which un-gates cd.yml
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# The signing key is never in the program, its configuration or its state (Pulumi standards MUST-3,
+# ADR-0023). The stack creates its secret empty; this generates the key, pipes it into Secrets
+# Manager, and records the VersionId for the stack to pin. The database needs nothing here: RDS
+# keeps the master password itself. Run it after the first `up`, then `up` again. Prints no value
+# and writes no file.
+
+# Generate the token signing key. `--rotate` replaces it, signing everyone out
+secrets STACK="dev" *FLAGS: (_require "pulumi") (_require "aws") (_require "openssl")
+    ./scripts/secrets.sh {{STACK}} {{FLAGS}}
+{% endraw %}{% endif %}{% raw %}
+# Copy stack outputs into GitHub repository variables, which un-gates cd.yml. Refuses until secrets_ready
 sync-github STACK="dev": (_require "pulumi") (_require "gh")
     ./scripts/sync-github.sh {{STACK}}
 

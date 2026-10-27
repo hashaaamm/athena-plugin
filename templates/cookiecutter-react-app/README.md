@@ -5,7 +5,7 @@
 A **React + TypeScript single-page application in a repository of its own**, with the Pulumi stack
 that serves it — from Cloud Run on GCP, or from a private S3 bucket behind CloudFront on AWS, chosen
 at generation time by `deploy_target`. Every frontend is its own repository, with its own stack and
-its own CD (ADR-0022): the backend it calls is generated separately, from `cookiecutter-service`
+its own CD (ADR-0022): the backend it calls is generated separately, from `cookiecutter-fastapi-service`
 (FastAPI) or `cookiecutter-gin-service` (Gin), which answer the same HTTP contract.
 
 It generates a repository whose application already satisfies the handbook's frontend rules — a
@@ -115,7 +115,7 @@ braces escaped.
 
 ## Related
 
-- [templates/README.md](../README.md) · [cookiecutter-service/](../cookiecutter-service) · [cookiecutter-gin-service/](../cookiecutter-gin-service)
+- [templates/README.md](../README.md) · [cookiecutter-fastapi-service/](../cookiecutter-fastapi-service) · [cookiecutter-gin-service/](../cookiecutter-gin-service)
 - The rules a generated repository is built to satisfy are retrieved, not linked: ask Athena for the
   **React architecture**, **data fetching**, **authentication in the browser**, **GitHub Actions
   standards** and **Pulumi standards**. Nothing in a generated repository points at a file path in

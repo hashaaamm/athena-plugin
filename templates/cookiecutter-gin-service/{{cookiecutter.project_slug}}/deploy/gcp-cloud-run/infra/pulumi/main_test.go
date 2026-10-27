@@ -33,6 +33,7 @@ var allExports = []string{
 	"gcp_region",
 	"image_repo",
 	"runtime_sa",
+	"secrets_ready",
 	"service_url",
 	"wif_provider",
 }
@@ -134,16 +135,39 @@ func TestThePipelineExportsAreNeverEmpty(t *testing.T) {
 
 // --- Browser clients --------------------------------------------------------------------------
 
-func TestTheStackServesOneServiceUnderTwoAccounts(t *testing.T) {
+func TestTheStackServesOneServiceUnderItsOwnAccounts(t *testing.T) {
 	// Backend only: a browser client is its own repository with its own stack (ADR-0022), so it
 	// adds nothing here whatever this stack is configured with.
+{%- if cookiecutter.use_postgres == "yes" %}
+	want := 3 // runtime, migrator, CI
+{%- else %}
+	want := 2 // runtime, CI
+{%- endif %}
 	for _, mutate := range []func(*stackconfig.StackConfig){nil, withBrowserClient} {
 		s := deployed(t, mutate)
 		if services := s.OfType(serviceType); len(services) != 1 {
 			t.Errorf("%d Cloud Run services, want 1", len(services))
 		}
-		if accounts := s.OfType(accountType); len(accounts) != 2 {
-			t.Errorf("%d service accounts, want the runtime and the CI one", len(accounts))
+		if accounts := s.OfType(accountType); len(accounts) != want {
+			t.Errorf("%d service accounts, want %d", len(accounts), want)
+		}
+	}
+}
+
+// --- Secrets ----------------------------------------------------------------------------------
+
+func TestTheStackWritesNoSecretValue(t *testing.T) {
+	// Pulumi standards MUST-3: no secret value in the program, its configuration or its state. A
+	// generated value is in state like any other, so the stack generates none and writes no
+	// version; `just infra-secrets` does both, out of band.
+	for _, mutate := range []func(*stackconfig.StackConfig){nil, withBrowserClient} {
+		for _, res := range deployed(t, mutate).Resources() {
+			if strings.HasPrefix(res.Type, "random:") || res.Type == "gcp:secretmanager/secretVersion:SecretVersion" {
+				t.Errorf("%s %q puts a secret value in state", res.Type, res.Name)
+			}
+			if len(res.Secret) != 0 {
+				t.Errorf("%s %q has secret inputs %v", res.Type, res.Name, res.Secret)
+			}
 		}
 	}
 }

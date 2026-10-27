@@ -111,6 +111,9 @@ just infra-test           # component tests; no cloud credentials
 just infra-preview        # what `up` would change
 just infra-up             # creates real, billable resources; prompts, by design
 just infra-up dev --yes   # the same, unattended — pulumi refuses to guess
+{%- if cookiecutter.use_postgres == "yes" %}
+just infra-secrets        # generates the secrets the stack leaves empty; then `just infra-up` again
+{%- endif %}
 just infra-sync-github    # copies stack outputs into repository variables
 just infra-destroy        # removes every resource the stack created
 just infra-teardown       # then the state bucket and KMS key, which the stack never created
@@ -139,14 +142,24 @@ Three places, and the distinction is the security boundary. Nothing moves betwee
 
 | Kind | Set in | Read by | Examples |
 | --- | --- | --- | --- |
-| Local development | `.env`, copied from `.env.example` and never committed | Compose and the service on your machine | `ENVIRONMENT`, `JSON_LOGS`{% if cookiecutter.use_postgres == "yes" %}, `POSTGRES_*`, `REFRESH_TRANSPORT`{% endif %} |
+| Local development | `.env`, copied from `.env.example` and never committed | Compose and the service on your machine | `ENVIRONMENT`, `JSON_LOGS`{% if cookiecutter.use_postgres == "yes" %}, `DATABASE_AUTH`, `POSTGRES_*`, `REFRESH_TRANSPORT`{% endif %} |
 | Deploy configuration | GitHub repository **variables** | `.github/workflows/cd.yml` | {% if cookiecutter.deploy_target == "aws-ecs-express" %}`AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`, `IMAGE_REPO`, `ECS_CLUSTER`, `ECS_SERVICE_ARN`, `ECS_MIGRATE_TASK_FAMILY`{% else %}`WIF_PROVIDER`, `DEPLOY_SA`, `GCP_REGION`, `IMAGE_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_MIGRATE_JOB`{% endif %} |
-| Runtime secrets | {% if cookiecutter.deploy_target == "aws-ecs-express" %}Secrets Manager | the ECS task, as an environment variable pinned to one version |{% else %}Secret Manager | the Cloud Run revision, as an environment variable |{% endif %} {% if cookiecutter.use_postgres == "yes" %}`DATABASE_URL_OVERRIDE`, `JWT_SECRET`{% endif %}{% if cookiecutter.use_postgres == "yes" and cookiecutter.use_sentry == "yes" %}, {% endif %}{% if cookiecutter.use_sentry == "yes" %}`SENTRY_DSN`{% endif %} |
+| Runtime secrets | {% if cookiecutter.deploy_target == "aws-ecs-express" %}Secrets Manager | the ECS task, as an environment variable pinned to one version |{% else %}Secret Manager | the Cloud Run revision, as an environment variable pinned to one version |{% endif %} {% if cookiecutter.use_postgres == "yes" %}`JWT_SECRET`{% if cookiecutter.deploy_target == "aws-ecs-express" %}; the migration task's `DATABASE_USER` and `DATABASE_PASSWORD`{% else %}; the migration job's `DATABASE_PASSWORD`{% endif %}{% endif %}{% if cookiecutter.use_postgres == "yes" and cookiecutter.use_sentry == "yes" %}; {% endif %}{% if cookiecutter.use_sentry == "yes" %}`SENTRY_DSN`{% endif %} |
 
-{% if cookiecutter.use_postgres == "yes" %}The stack generates the first two and nobody ever types either: the database DSN, and `JWT_SECRET`
-— 48 random characters minted by Pulumi, mounted on the service and on nothing else. The migration
-{% if cookiecutter.deploy_target == "aws-ecs-express" %}task{% else %}job{% endif %} is deliberately not granted the signing key; it signs nothing. A deployed server refuses to
-start with the local sentinel key, or with one under 32 characters.{% endif %}{% if cookiecutter.use_sentry == "yes" %}
+{% if cookiecutter.use_postgres == "yes" -%}
+No secret value is in the Pulumi program, its configuration or its state (ADR-0023). The stack
+creates each secret empty and mounts it only once its version is recorded; `just infra-secrets`
+generates the values, pipes them in, and records the versions — `JWT_SECRET` is 64 random
+characters nobody sees, mounted on the service and on nothing else. A deployed server refuses to
+start with the local sentinel key, or with one under 32 characters.
+
+The deployed service holds **no database password at all**. It logs in as its own cloud identity
+— `DATABASE_AUTH={% if cookiecutter.deploy_target == "aws-ecs-express" %}rds-iam`, with a token its task role signs for every new connection{% else %}cloud-sql-iam`, through the Cloud SQL Go connector{% endif %} — with row
+privileges only. The migration {% if cookiecutter.deploy_target == "aws-ecs-express" %}task logs in as the RDS master user, from the secret RDS itself
+creates and rotates{% else %}job logs in as Cloud SQL's `postgres` admin, with the password
+`just infra-secrets` set{% endif %}, owns the schema, and after every run grants the service's role what it needs.
+It is not granted the signing key; it signs nothing.
+{%- endif %}{% if cookiecutter.use_sentry == "yes" %}
 `SENTRY_DSN` is the one a human fills in, from {% if cookiecutter.deploy_target == "aws-ecs-express" %}a secret{% else %}a container{% endif %} the stack creates empty.{% endif %}
 
 No secret value belongs in a file in this repository. `gitleaks` enforces that on every push and in

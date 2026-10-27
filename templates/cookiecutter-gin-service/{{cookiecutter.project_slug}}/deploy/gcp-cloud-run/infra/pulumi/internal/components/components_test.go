@@ -134,9 +134,9 @@ func TestAServiceRefusesASecretItWasNeverGiven(t *testing.T) {
 	// Otherwise the failure is a revision that cannot resolve its secret, which reads as a broken
 	// application rather than a mistyped key.
 	args := backendArgs()
-	args.SecretEnv = map[string]string{"DATABASE_URL_OVERRIDE": "typo"}
+	args.SecretEnv = map[string]string{"JWT_SECRET": "typo"}
 	args.SecretRefs = map[string]components.SecretRef{
-		"database-url": {Secret: pulumi.String("x"), Version: pulumi.String("1")},
+		"jwt-secret": {Secret: pulumi.String("x"), Version: pulumi.String("1")},
 	}
 	_, err := infratest.TryRun(slug, nil, func(ctx *pulumi.Context) error {
 		_, err := components.NewService(ctx, cfg, args)
@@ -162,30 +162,33 @@ func TestAMountedSecretIsPinnedToAVersionNumber(t *testing.T) {
 	}
 }
 
-func TestEveryContainerWithoutAVersionIsDeclaredManual(t *testing.T) {
-	// A mounted container with no versions is not "configured later" — it is a deploy that fails
-	// outright. So a secret the stack can generate gets its version here, and a secret that
-	// genuinely comes from outside is listed in ManualSecrets and gets no reference until a human
-	// has populated it.
+// readers is every secret the stack creates, read by the runtime account.
+func readers() map[string]pulumi.StringInput {
+	out := map[string]pulumi.StringInput{}
+	for _, name := range components.SecretNames {
+		out[name] = pulumi.String(runtimeEmail)
+	}
+	return out
+}
+
+func TestTheStackCreatesEverySecretEmptyAndWritesNoValue(t *testing.T) {
+	// Pulumi standards MUST-3: a secret value is never in the program, its configuration or its
+	// state. So the stack makes containers and grants and never a version — not even of a value it
+	// could have generated, because a generated value is in state like any other.
 	var secrets *components.Secrets
 	rec := run(t, func(ctx *pulumi.Context) error {
 		var err error
-		secrets, err = components.NewSecrets(ctx, cfg, components.SecretsArgs{
-			AccessorEmail: pulumi.String(runtimeEmail),
-			Generated: map[string]pulumi.StringInput{
-				"generated-one": pulumi.String("minted-by-the-stack"),
-			},
-		})
+		secrets, err = components.NewSecrets(ctx, cfg, components.SecretsArgs{Readers: readers()})
 		return err
 	})
-	if len(secrets.Versions) != len(secrets.IDs)-len(components.ManualSecrets) {
-		t.Errorf("%d versions for %d containers and %d manual secrets",
-			len(secrets.Versions), len(secrets.IDs), len(components.ManualSecrets))
+	if versions := rec.OfType("gcp:secretmanager/secretVersion:SecretVersion"); len(versions) != 0 {
+		t.Errorf("the stack writes %d secret versions", len(versions))
 	}
-	for _, name := range components.ManualSecrets {
-		if _, ok := secrets.Refs[name]; ok {
-			t.Errorf("manual secret %s has a reference before anybody populated it", name)
-		}
+	if len(secrets.IDs) != len(components.SecretNames) {
+		t.Errorf("%d containers for %d secret names", len(secrets.IDs), len(components.SecretNames))
+	}
+	if len(secrets.Refs) != 0 {
+		t.Errorf("references %v before any version number is configured", secrets.Refs)
 	}
 	// Access is granted per secret, never project-wide.
 	if got, want := len(rec.OfType("gcp:secretmanager/secretIamMember:SecretIamMember")), len(secrets.IDs); got != want {
@@ -193,22 +196,54 @@ func TestEveryContainerWithoutAVersionIsDeclaredManual(t *testing.T) {
 	}
 }
 
-func TestAGeneratedSecretValueIsMarkedSecret(t *testing.T) {
-	// The value is in state — encrypted with the stack's KMS key — and must never print in a
-	// preview or a log. AdditionalSecretOutputs covers the output side; this covers the input.
+func TestASecretIsReadByTheAccountItIsGivenToAndNoOther(t *testing.T) {
+	if len(components.SecretNames) == 0 {
+		t.Skip("this service has no secrets")
+	}
+	given := readers()
+	name := components.SecretNames[0]
+	given[name] = pulumi.String("someone-else@test-project.iam.gserviceaccount.com")
 	rec := run(t, func(ctx *pulumi.Context) error {
-		_, err := components.NewSecrets(ctx, cfg, components.SecretsArgs{
-			AccessorEmail: pulumi.String(runtimeEmail),
-			Generated:     map[string]pulumi.StringInput{"token": pulumi.String("value")},
+		_, err := components.NewSecrets(ctx, cfg, components.SecretsArgs{Readers: given})
+		return err
+	})
+	grant := rec.Find(t, "gcp:secretmanager/secretIamMember:SecretIamMember", name+"-accessor")
+	if got := grant.Inputs["member"]; got != "serviceAccount:someone-else@test-project.iam.gserviceaccount.com" {
+		t.Errorf("%s is readable by %v", name, got)
+	}
+	// And a secret nobody was named to read is refused at plan time.
+	delete(given, name)
+	if _, err := infratest.TryRun(slug, nil, func(ctx *pulumi.Context) error {
+		_, err := components.NewSecrets(ctx, cfg, components.SecretsArgs{Readers: given})
+		return err
+	}); err == nil || !strings.Contains(err.Error(), "no reader") {
+		t.Errorf("err = %v; want a refusal naming the readerless secret", err)
+	}
+}
+
+func TestAConfiguredVersionIsPinnedAndAnEmptyOneIsNotMounted(t *testing.T) {
+	if len(components.SecretNames) == 0 {
+		t.Skip("this service has no secrets")
+	}
+	name := components.SecretNames[0]
+	var secrets *components.Secrets
+	run(t, func(ctx *pulumi.Context) error {
+		var err error
+		secrets, err = components.NewSecrets(ctx, cfg, components.SecretsArgs{
+			Readers:  readers(),
+			Versions: map[string]string{name: "4"},
 		})
 		return err
 	})
-	version := rec.Find(t, "gcp:secretmanager/secretVersion:SecretVersion", "token-version")
-	if version.Inputs["secretData"] != "value" {
-		t.Fatalf("secretData = %v", version.Inputs["secretData"])
+	ref, ok := secrets.Refs[name]
+	if !ok {
+		t.Fatalf("no reference for %s at version 4", name)
 	}
-	if !slices.Contains(version.Secret, "secretData") {
-		t.Error("secretData reaches the provider as plaintext rather than as a secret")
+	if got, ok := ref.Version.(pulumi.String); !ok || got != "4" {
+		t.Errorf("version = %v, want 4", ref.Version)
+	}
+	if len(secrets.Refs) != 1 {
+		t.Errorf("references %v; only the configured one may be mounted", secrets.Refs)
 	}
 }
 
@@ -238,8 +273,9 @@ func TestIdleCPUThrottlingComesWithTheStartupBoost(t *testing.T) {
 	}
 }
 
-func TestAServiceWithoutADatabaseMountsNothing(t *testing.T) {
-	// An unused Cloud SQL attachment is a permission the service does not need.
+func TestTheServiceMountsNoVolume(t *testing.T) {
+	// A service with a database reaches it through the Go connector in its own process; a Cloud SQL
+	// volume would be a second way in that it never uses.
 	rec := newService(t, backendArgs())
 	svc := rec.Find(t, serviceType, slug)
 	if volumes, _ := infratest.Get(svc.Inputs, "template", "volumes").([]any); len(volumes) != 0 {
@@ -295,6 +331,35 @@ func TestEveryJobRunsTheSameImageAsItsServiceWithItsOwnCommand(t *testing.T) {
 	// One attempt: a failed run needs a human reading the log, not a retry that fails identically.
 	if got := infratest.Get(job.Inputs, "template", "template", "maxRetries"); got != 0.0 {
 		t.Errorf("maxRetries = %v", got)
+	}
+	// The service's account, unless the job is given one of its own; no database, no volume.
+	if got := infratest.Get(job.Inputs, "template", "template", "serviceAccount"); got != runtimeEmail {
+		t.Errorf("serviceAccount = %v", got)
+	}
+	if volumes, _ := infratest.Get(job.Inputs, "template", "template", "volumes").([]any); len(volumes) != 0 {
+		t.Errorf("volumes = %v", volumes)
+	}
+}
+
+func TestAJobWithADatabaseMountsItsConnectionAndRunsAsItsOwnAccount(t *testing.T) {
+	migrate := components.JobSpec{
+		Name:             "migrate",
+		Command:          []string{"/app/api"},
+		ServiceAccount:   pulumi.String("migrator@test-project.iam.gserviceaccount.com"),
+		CloudSQLInstance: pulumi.String("test-project:europe-west1:pg"),
+	}
+	args := backendArgs()
+	args.Jobs = []components.JobSpec{migrate}
+	job := newService(t, args).Find(t, jobType, slug+"-migrate")
+	template := infratest.Get(job.Inputs, "template", "template")
+	if got := infratest.Get(template, "serviceAccount"); got != "migrator@test-project.iam.gserviceaccount.com" {
+		t.Errorf("serviceAccount = %v", got)
+	}
+	if got := infratest.Get(template, "volumes", 0, "cloudSqlInstance", "instances", 0); got != "test-project:europe-west1:pg" {
+		t.Errorf("Cloud SQL volume = %v", got)
+	}
+	if got := infratest.Get(template, "containers", 0, "volumeMounts", 0, "mountPath"); got != "/cloudsql" {
+		t.Errorf("mount = %v", got)
 	}
 }
 

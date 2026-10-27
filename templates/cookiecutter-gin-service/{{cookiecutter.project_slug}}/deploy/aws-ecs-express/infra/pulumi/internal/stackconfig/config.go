@@ -53,6 +53,18 @@ var AppEnvironments = []string{"local", "test", "staging", "production"}
 // RefreshTransports is what REFRESH_TRANSPORT may be set to on the deployed service: the set
 // backend/internal/config accepts, for the same reason as AppEnvironments.
 var RefreshTransports = []string{"body", "cookie"}
+
+const (
+	// MasterUsername is the RDS master login: the migration task's, with the password RDS creates,
+	// keeps in Secrets Manager and rotates. It owns the schema.
+	MasterUsername = "app"
+
+	// DefaultDatabaseAppRole is the service's own login, which authenticates with IAM.
+	DefaultDatabaseAppRole = "app_iam"
+)
+
+// rolePattern is a Postgres identifier that needs no quoting.
+var rolePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 {%- endif %}
 
 // FargateSizes is every cpu/memory pair the stack accepts, in the units ECS takes them: CPU units
@@ -153,6 +165,21 @@ type StackConfig struct {
 	DatabaseInstanceClass string
 	DatabaseStorageGB     int
 	DatabaseMultiAZ       bool
+
+	// DatabaseAppRole is the Postgres role the service logs in as, with an IAM token and no
+	// password. The migration task creates it and grants it row privileges on every run; the
+	// runtime role may connect as it and as nothing else.
+	DatabaseAppRole string
+
+	// JWTSecretVersion is the Secrets Manager VersionId of the token signing key the service pins.
+	// Empty means "not mounted".
+	//
+	// The value is never in this program, its configuration or its state: Pulumi standards MUST-3,
+	// and ADR-0023 for how this stack meets it. The stack creates the secret empty; `just
+	// infra-secrets` generates the key, puts it as a new version and records the VersionId here.
+	// Until then nothing mounts it, and secrets_ready says so — which is what sync-github.sh checks
+	// before it lets CD deploy an image that would refuse to start without its key.
+	JWTSecretVersion string
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
 
@@ -189,6 +216,7 @@ func Defaults(accountID, region, environment, githubRepository, slug string) Sta
 	c.RefreshTransport = "body"
 	c.DatabaseInstanceClass = "db.t4g.micro"
 	c.DatabaseStorageGB = MinDatabaseStorageGB
+	c.DatabaseAppRole = DefaultDatabaseAppRole
 {%- endif %}
 	return c
 }
@@ -273,6 +301,13 @@ func (c StackConfig) Validate() error {
 			"databaseStorageGb %d is outside %d..%d: gp3's floor, and below the autoscaling ceiling",
 			c.DatabaseStorageGB, MinDatabaseStorageGB, MaxDatabaseStorageGB-1))
 	}
+	// A plain lowercase identifier: it is spelled into an IAM resource ARN, where a quote or a
+	// wildcard would grant something nobody meant, and it must not be the master login, which
+	// connects with the password RDS keeps.
+	if !rolePattern.MatchString(c.DatabaseAppRole) || c.DatabaseAppRole == MasterUsername {
+		problems = append(problems, fmt.Errorf(
+			"databaseAppRole %q must be a lowercase Postgres identifier other than %q", c.DatabaseAppRole, MasterUsername))
+	}
 {%- endif %}
 	return errors.Join(problems...)
 }
@@ -308,6 +343,17 @@ func (c StackConfig) SubjectPrefix() string {
 		return c.GitHubSubjectPrefix
 	}
 	return "repo:" + c.GitHubRepository
+}
+
+// SecretsReady is whether every secret the service cannot start without has a pinned version —
+// the stack's secrets_ready export. A Sentry DSN is optional and does not count.
+func (c StackConfig) SecretsReady() bool {
+{%- if cookiecutter.use_postgres == "yes" %}
+	return c.JWTSecretVersion != ""
+{%- else %}
+	// Nothing to generate: no database means no users, so no signing key.
+	return true
+{%- endif %}
 }
 
 // IsProduction is whether this STACK is the production one. Deletion protection, the final
@@ -431,6 +477,10 @@ func Load(ctx *pulumi.Context) (StackConfig, error) {
 	if c.DatabaseMultiAZ, err = boolOr(cfg, "databaseMultiAz", c.DatabaseMultiAZ); err != nil {
 		return StackConfig{}, err
 	}
+	if value := strings.TrimSpace(cfg.Get("databaseAppRole")); value != "" {
+		c.DatabaseAppRole = value
+	}
+	c.JWTSecretVersion = strings.TrimSpace(cfg.Get("jwtSecretVersion"))
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
 	c.SentryDSNVersion = strings.TrimSpace(cfg.Get("sentryDsnVersion"))

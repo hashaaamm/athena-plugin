@@ -60,6 +60,13 @@ config:
   {{ cookiecutter.project_slug }}:databaseInstanceClass: db.t4g.micro
   {{ cookiecutter.project_slug }}:databaseStorageGb: "20"
   {{ cookiecutter.project_slug }}:databaseMultiAz: "false"
+  # The Postgres role the service logs in as, with an IAM token and no password. The migration task
+  # creates it and grants it row privileges; the task role may connect as it and nothing else.
+  {{ cookiecutter.project_slug }}:databaseAppRole: app_iam
+  # A VersionId, not a value: `just infra-secrets dev` generates the token signing key, puts it in
+  # its Secrets Manager secret and writes the VersionId here. Until then the stack mounts nothing,
+  # exports secrets_ready=false, and sync-github.sh will not un-gate CD. Never type a value here.
+  {{ cookiecutter.project_slug }}:jwtSecretVersion: ""
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
   # Set to the VersionId that

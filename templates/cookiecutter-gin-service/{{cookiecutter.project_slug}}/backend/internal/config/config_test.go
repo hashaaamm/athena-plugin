@@ -158,6 +158,127 @@ func TestTheAssembledURLEscapesThePassword(t *testing.T) {
 	}
 }
 
+// --- How the process authenticates to the database ----------------------------
+
+// Local development, the suite and CI set nothing new.
+func TestPasswordIsTheDefaultDatabaseAuth(t *testing.T) {
+	if got := load(t, nil).DatabaseAuth; got != config.AuthPassword {
+		t.Fatalf("DATABASE_AUTH defaults to %q, want password", got)
+	}
+	refused(t, map[string]string{"DATABASE_AUTH": "iam"}, "DATABASE_AUTH")
+}
+
+// The AWS migration task is handed the admin login one JSON key per variable, out of RDS's own
+// secret. DATABASE_HOST is what switches to those parts — all of them, never a mix with POSTGRES_*.
+func TestTheDeployedPartsReplaceTheLocalOnesWhenDatabaseHostIsSet(t *testing.T) {
+	cfg := load(t, deployed(map[string]string{
+		"POSTGRES_PASSWORD": "",
+		"DATABASE_HOST":     "db.abc.eu-west-1.rds.amazonaws.com",
+		"DATABASE_NAME":     "app",
+		"DATABASE_USER":     "app",
+		"DATABASE_PASSWORD": "from-the-master-secret",
+	}))
+	if want := "postgres://app:from-the-master-secret@db.abc.eu-west-1.rds.amazonaws.com:5432/app"; cfg.DatabaseURL() != want {
+		t.Fatalf("DatabaseURL = %q, want %q", cfg.DatabaseURL(), want)
+	}
+	// And the override still wins over both.
+	cfg = load(t, map[string]string{"DATABASE_HOST": "ignored", "DATABASE_NAME": "x", "DATABASE_USER": "x", "DATABASE_URL_OVERRIDE": "postgres://o@h/d"})
+	if cfg.DatabaseURL() != "postgres://o@h/d" {
+		t.Fatalf("DatabaseURL = %q, want the override", cfg.DatabaseURL())
+	}
+}
+
+// The GCP migration job reaches Cloud SQL through the socket Cloud Run mounts at /cloudsql.
+func TestASocketDirectoryHostBecomesPgxsHostParameter(t *testing.T) {
+	cfg := load(t, map[string]string{
+		"DATABASE_HOST": "/cloudsql/project:region:instance", "DATABASE_NAME": "app",
+		"DATABASE_USER": "postgres", "DATABASE_PASSWORD": "pw",
+	})
+	if want := "postgres://postgres:pw@:5432/app?host=%2Fcloudsql%2Fproject%3Aregion%3Ainstance"; cfg.DatabaseURL() != want {
+		t.Fatalf("DatabaseURL = %q, want %q", cfg.DatabaseURL(), want)
+	}
+}
+
+func TestTheDeployedPartsAreRequiredTogether(t *testing.T) {
+	for _, name := range []string{"DATABASE_NAME", "DATABASE_USER"} {
+		vars := map[string]string{"DATABASE_HOST": "db", "DATABASE_NAME": "app", "DATABASE_USER": "app"}
+		delete(vars, name)
+		refused(t, vars, name)
+	}
+	// Deployed, the password is required too — empty is no better than the placeholder.
+	refused(t, deployed(map[string]string{"DATABASE_HOST": "db", "DATABASE_NAME": "app", "DATABASE_USER": "app"}), "DATABASE_PASSWORD")
+}
+
+func rdsIAM(overrides map[string]string) map[string]string {
+	vars := deployed(map[string]string{
+		"DATABASE_AUTH": "rds-iam",
+		"DATABASE_HOST": "db.abc.eu-west-1.rds.amazonaws.com",
+		"DATABASE_NAME": "app",
+		"DATABASE_USER": "app_iam",
+		"AWS_REGION":    "eu-west-1",
+	})
+	delete(vars, "POSTGRES_PASSWORD")
+	for key, value := range overrides {
+		vars[key] = value
+	}
+	return vars
+}
+
+func cloudSQLIAM(overrides map[string]string) map[string]string {
+	vars := deployed(map[string]string{
+		"DATABASE_AUTH":      "cloud-sql-iam",
+		"CLOUD_SQL_INSTANCE": "project:europe-west1:service-pg-dev",
+		"DATABASE_NAME":      "app",
+		"DATABASE_USER":      "service-run-dev@project.iam",
+	})
+	delete(vars, "POSTGRES_PASSWORD")
+	for key, value := range overrides {
+		vars[key] = value
+	}
+	return vars
+}
+
+// Deployed with IAM authentication there is no password to refuse: the placeholder check is a
+// password-mode check, and the service starts on its identity alone.
+func TestEachIAMModeStartsDeployedWithItsSettingsAndNoPassword(t *testing.T) {
+	cfg := load(t, rdsIAM(nil))
+	if cfg.DatabaseTCPPort() != config.DefaultDatabasePort {
+		t.Errorf("DATABASE_PORT defaults to %d", cfg.DatabaseTCPPort())
+	}
+	load(t, cloudSQLIAM(nil))
+}
+
+func TestAnIAMModeIsRefusedWithoutItsSettings(t *testing.T) {
+	for _, name := range []string{"DATABASE_HOST", "DATABASE_NAME", "DATABASE_USER", "AWS_REGION"} {
+		refused(t, rdsIAM(map[string]string{name: ""}), name)
+	}
+	for _, name := range []string{"CLOUD_SQL_INSTANCE", "DATABASE_NAME", "DATABASE_USER"} {
+		refused(t, cloudSQLIAM(map[string]string{name: ""}), name)
+	}
+	refused(t, cloudSQLIAM(map[string]string{"CLOUD_SQL_INSTANCE": "just-an-instance"}), "CLOUD_SQL_INSTANCE")
+	load(t, cloudSQLIAM(map[string]string{"CLOUD_SQL_INSTANCE": "example.com:project:europe-west1:pg"}))
+}
+
+// A password beside IAM authentication is a credential nothing reads, and a stack wired wrong.
+func TestAnIAMModeRefusesAPassword(t *testing.T) {
+	for _, vars := range []map[string]string{
+		rdsIAM(map[string]string{"DATABASE_PASSWORD": "x"}),
+		rdsIAM(map[string]string{"DATABASE_URL_OVERRIDE": "postgres://u:p@h/d"}),
+		cloudSQLIAM(map[string]string{"DATABASE_PASSWORD": "x"}),
+	} {
+		refused(t, vars, "the identity is the credential")
+	}
+}
+
+// The migration job bootstraps the application's role only when told both what it is called and
+// how it connects.
+func TestTheAppRoleNeedsItsAuthAndTheAuthNeedsItsRole(t *testing.T) {
+	refused(t, map[string]string{"DATABASE_APP_ROLE": "app_iam"}, "DATABASE_APP_AUTH")
+	refused(t, map[string]string{"DATABASE_APP_ROLE": "app_iam", "DATABASE_APP_AUTH": "password"}, "DATABASE_APP_AUTH")
+	refused(t, map[string]string{"DATABASE_APP_AUTH": "rds-iam"}, "DATABASE_APP_ROLE")
+	load(t, map[string]string{"DATABASE_APP_ROLE": "app_iam", "DATABASE_APP_AUTH": "rds-iam"})
+}
+
 // --- The signing key ----------------------------------------------------------
 
 // A service that starts with the sentinel signs sessions anybody who has read this template can

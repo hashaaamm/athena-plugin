@@ -31,7 +31,17 @@ var manualVariables = []string{
 
 // notSynced are exports no pipeline reads. Listed, so a new export that should have been synced
 // fails a test instead of being silently left behind.
-var notSynced = []string{"cloud_sql_instance"}
+var notSynced = []string{
+	"cloud_sql_instance",
+	// Read by sync-github.sh to refuse un-gating CD too early, not copied into a variable.
+	"secrets_ready",
+}
+{%- if cookiecutter.use_postgres == "yes" %}
+
+// requiredSecretVersions are the stack configuration keys secrets.sh writes and secrets_ready
+// waits for.
+var requiredSecretVersions = []string{"jwtSecretVersion", "dbAdminPasswordVersion"}
+{%- endif %}
 
 var (
 	mappingPattern  = regexp.MustCompile(`"([a-z_]+):([A-Z0-9_]+)"`)
@@ -133,6 +143,62 @@ func TestAnOutputThatCanBeEmptyUnsetsItsVariableRatherThanFailingTheSync(t *test
 		}
 	}
 }
+
+func TestTheSyncScriptRefusesToUngateCDBeforeTheSecretsAreReady(t *testing.T) {
+	// Un-gating CD deploys an image that refuses to start without its signing key. The check has
+	// to come before the first variable is set — WIF/the role ARN among them — and has to name the
+	// fix.
+	script := syncScript(t)
+	check := strings.Index(script, "read_output secrets_ready")
+	firstSet := strings.Index(script, "gh variable set")
+	if check < 0 || firstSet < 0 || check > firstSet {
+		t.Error("sync-github.sh must check secrets_ready before it sets any variable")
+	}
+	if !strings.Contains(script, `!= "true"`) || !strings.Contains(script, "just infra-secrets") {
+		t.Error("sync-github.sh must refuse unless secrets_ready is true, and print `just infra-secrets` as the fix")
+	}
+}
+{%- if cookiecutter.use_postgres == "yes" %}
+
+func secretsScript(t *testing.T) string {
+	return read(t, infraDir, "scripts", "secrets.sh")
+}
+
+func TestTheSecretsRecipeRunsTheSecretsScript(t *testing.T) {
+	if line := lineContaining(read(t, infraDir, "justfile"), "./scripts/secrets.sh"); line == "" {
+		t.Error("infra/justfile has no recipe running scripts/secrets.sh")
+	}
+}
+
+func TestTheSecretsScriptRecordsEveryVersionTheStackReads(t *testing.T) {
+	// The script writes the version numbers the stack mounts. A key spelled differently on the two
+	// sides is a secret that is generated, stored, and never mounted.
+	script := secretsScript(t)
+	for _, key := range requiredSecretVersions {
+		if !strings.Contains(script, "config set "+key) && !strings.Contains(script, "record_version "+key) {
+			t.Errorf("secrets.sh never sets %s", key)
+		}
+	}
+}
+
+func TestTheSecretsScriptNeverPutsAValueWhereItCanBeSeen(t *testing.T) {
+	// Generated, piped and forgotten: no file, no argument a process listing shows, no echo, no
+	// trace. And no silent replacement — a version already set is kept unless --rotate says so.
+	script := secretsScript(t)
+	for _, forbidden := range []string{"set -x", "--password", "mktemp", "> /tmp", "tee "} {
+		for _, line := range strings.Split(script, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.Contains(line, forbidden) {
+				t.Errorf("secrets.sh contains %q: %s", forbidden, strings.TrimSpace(line))
+			}
+		}
+	}
+	for _, want := range []string{"set -euo pipefail", "openssl rand -base64 48", "--rotate"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("secrets.sh lacks %q", want)
+		}
+	}
+}
+{%- endif %}
 
 // --- The pipelines ----------------------------------------------------------------------------
 

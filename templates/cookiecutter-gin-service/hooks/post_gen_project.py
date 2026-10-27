@@ -20,6 +20,7 @@ PROJECT = Path.cwd()
 EXECUTABLE = (
     "infra/bootstrap/state-bucket.sh",
     "infra/bootstrap/teardown.sh",
+    "infra/scripts/secrets.sh",
     "infra/scripts/sync-github.sh",
 )
 
@@ -34,8 +35,8 @@ def _select_deploy_target() -> None:
     """Move the chosen target's stack and pipelines into place, and drop every other target.
 
     Each target under deploy/ is a complete implementation of the same interface: an infra/
-    directory whose justfile has the same recipes (lock, test, lint, preview, up, sync-github,
-    destroy, teardown), and the deploy workflows those recipes un-gate. The generated repository
+    directory whose justfile has the same recipes (lock, test, lint, preview, up, secrets,
+    sync-github, destroy, teardown), and the deploy workflows those recipes un-gate. The generated repository
     has exactly one of them, at the paths every other file already refers to — infra/ and
     .github/workflows/ — so nothing outside deploy/ needs to know which target was chosen.
     """
@@ -72,6 +73,9 @@ BACKEND_WITHOUT_POSTGRES: tuple[str, ...] = (
     "backend/internal/http/middleware/actor.go",
     "backend/internal/http/middleware/csrf.go",
     "backend/internal/app/migrate.go",
+    "backend/internal/app/database.go",
+    "backend/internal/app/database_test.go",
+    "backend/internal/app/export_test.go",
     "backend/internal/app/main_test.go",
     "backend/internal/app/auth_api_test.go",
     "backend/internal/app/sessions_api_test.go",
@@ -93,17 +97,23 @@ BACKEND_WITHOUT_SENTRY: tuple[str, ...] = ("backend/internal/observability",)
 #: the identities and the secrets it reads. The shared files — main.go, the config, the API list,
 #: the runtime roles — branch in Jinja instead, because they exist either way. On AWS the
 #: migration task definition goes too: with no database there is nothing for it to migrate.
+#:
+#: secrets.sh goes with the database on both targets, because everything it generates — the
+#: token signing key, and on GCP the database admin password — exists only with one: no database
+#: means no users, so no authentication and nothing to sign.
 INFRA_WITHOUT_POSTGRES: dict[str, tuple[str, ...]] = {
     "gcp-cloud-run": (
         "infra/pulumi/internal/components/database.go",
         "infra/pulumi/internal/components/database_test.go",
         "infra/pulumi/main_postgres_test.go",
+        "infra/scripts/secrets.sh",
     ),
     "aws-ecs-express": (
         "infra/pulumi/internal/components/database.go",
         "infra/pulumi/internal/components/database_test.go",
         "infra/pulumi/internal/components/migrations.go",
         "infra/pulumi/main_postgres_test.go",
+        "infra/scripts/secrets.sh",
     ),
 }
 

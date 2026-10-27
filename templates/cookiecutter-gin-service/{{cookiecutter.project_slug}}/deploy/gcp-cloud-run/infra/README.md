@@ -43,9 +43,24 @@ out of date.
 4. pulumi stack init dev --secrets-provider=…      points at that bucket, with the KMS key from step 3
 5. just infra-preview                              read it, by a human
 6. just infra-up                                   creates the service on a placeholder image
-7. gcloud secrets versions add …                   values a human supplies, never Pulumi
+{%- if cookiecutter.use_postgres == "yes" %}
+7. just infra-secrets                              generates the secrets the stack leaves empty
+8. just infra-up                                   again: mounts the versions step 7 recorded
+{%- if cookiecutter.use_sentry == "yes" %}
+   (optional) gcloud secrets versions add …        the Sentry DSN, which a human supplies
+{%- endif %}
+9. just infra-sync-github                          copies the stack's outputs into repository variables
+10. merge to main                                  cd.yml is no longer inert; the real image deploys
+{%- else %}
+{%- if cookiecutter.use_sentry == "yes" %}
+7. gcloud secrets versions add …                   optional: the Sentry DSN, which a human supplies
 8. just infra-sync-github                          copies the stack's outputs into repository variables
 9. merge to main                                   cd.yml is no longer inert; the real image deploys
+{%- else %}
+7. just infra-sync-github                          copies the stack's outputs into repository variables
+8. merge to main                                   cd.yml is no longer inert; the real image deploys
+{%- endif %}
+{%- endif %}
 ```
 
 Step 3 is a script rather than a stack because a stack cannot create the bucket that holds its own
@@ -57,19 +72,40 @@ you; this command creates billable resources and a human reading the preview is 
 pipeline, or from an agent with no terminal, type it: `just infra-up dev --yes`. The stack name is
 positional, so the flag has to follow one.
 
-Step 7 is separate because secret *values* must never appear in infrastructure code, in a stack
-configuration file, or in state. The stack creates the empty container and grants access to it;
-what goes inside is added out of band. Ask Athena for the Pulumi standards for the graded rule.
+Secret *values* never appear in infrastructure code, in a stack configuration file, or in state —
+not even a value the stack could have generated itself, because a generated value is in state like
+any other. Ask Athena for the Pulumi standards (MUST-3); ADR-0023 records how this stack meets it.
+The stack creates each Secret Manager container empty, grants one account access to it, and mounts
+it only once its version *number* — which is not a secret — is in `Pulumi.<stack>.yaml`.
 {%- if cookiecutter.use_postgres == "yes" %}
-The database DSN and the token signing key are the exception: the stack generates both, nobody
-ever types them, and they have a version the moment step 6 finishes.
+
+Step 7 is the out-of-band half, and it is a script rather than a stack resource for exactly that
+reason. `just infra-secrets` (`scripts/secrets.sh`) generates two values, pipes each one straight to
+where it is kept, and records the version numbers as `jwtSecretVersion` and `dbAdminPasswordVersion`:
+
+- **`jwt-secret`**, the HS256 key the service signs tokens with: 64 random characters, mounted on
+  the service as `JWT_SECRET` and on nothing else.
+- **`db-admin-password`**, the password of Cloud SQL's built-in `postgres` login. The script sets it
+  on the instance and stores it for the migration job, which mounts it as `DATABASE_PASSWORD`. The
+  service never sees it — see [Two database identities](#two-database-identities).
+
+No value is printed, written to a file or passed as a command-line argument. Run it again and it
+keeps what is already recorded; `just infra-secrets dev --rotate` replaces both. **Rotating signs
+every user out** — every token was signed with the old key — and the migration job cannot log in
+between the rotation and the `up` that pins the new password, so rotate between deploys.
+
+Step 8 is the same `up` again: it is the one that mounts the versions step 7 recorded. Until both
+are recorded the stack exports `secrets_ready=false`, and step 9 refuses to un-gate CD — the image
+CD would deploy refuses to start without its signing key.
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-The Sentry DSN is the value step 7 exists for, and it is optional: the container stays empty and
-unmounted until you add a version and record its number as `sentryDsnVersion`.
+
+The Sentry DSN is the one value a human adds, and it is optional: the container stays empty and
+unmounted until you add a version — on stdin, `gcloud secrets versions add <id> --data-file=-` —
+and record its number as `sentryDsnVersion`, then `up` again.
 {%- endif %}
 
-Step 9 is last because the service exists before the image does. `pulumi up` creates a Cloud Run
+Merging is last because the service exists before the image does. `pulumi up` creates a Cloud Run
 service on Google's public `hello` container, Cloud Run assigns it a URL, and only then can a
 pipeline push a real image at it. That ordering matters more than it looks: anything that compiles
 its own origin into a build artefact — a client bundle with an API base URL in it — cannot be built
@@ -86,6 +122,13 @@ variable, then the real build. A browser client relies on exactly that; see
 3. gcloud kms keys delete … (30 days on)  KMS will not go faster; step 2 prints the commands
 ```
 
+{% if cookiecutter.use_postgres == "yes" -%}
+`destroy` takes the secret containers with it — every version `just infra-secrets` added, so a
+stack brought back up needs step 7 again — and drops the service's IAM database user only after
+the database, because the grants the migration job gave it are what Postgres refuses to drop a
+role over. The `postgres` login goes with the instance.
+
+{% endif -%}
 **`pulumi destroy` does not undo step 3 of the setup order at the top of this page.** It removes
 what the stack created and nothing else, and the state bucket and the KMS key were created by
 `state-bucket.sh`, with plain gcloud. Pulumi has never known about them, so no Pulumi command will
@@ -140,7 +183,10 @@ infra/
 ├── justfile                    test lint preview up sync-github destroy teardown lock
 ├── bootstrap/state-bucket.sh   plain gcloud; creates the bucket Pulumi stores state in
 ├── bootstrap/teardown.sh       the inverse; removes what `pulumi destroy` cannot reach
-├── scripts/sync-github.sh      copies stack outputs into GitHub repository variables
+{%- if cookiecutter.use_postgres == "yes" %}
+├── scripts/secrets.sh          generates the secrets the stack leaves empty; records their versions
+{%- endif %}
+├── scripts/sync-github.sh      copies stack outputs into GitHub repository variables; checks secrets_ready
 └── pulumi/
     ├── Pulumi.yaml             project, runtime, and the GCS backend URL
     ├── Pulumi.dev.yaml         per-stack configuration; a second environment is a sibling file
@@ -167,11 +213,11 @@ copied file with a different string in it.
 | --- | --- | --- |
 | `apis` | the service APIs everything else needs, enabled first, with every other resource depending on them | free |
 | `registry` | one Artifact Registry repository, keeping the last 10 images | pennies |
-| `identities` | a runtime service account, a CI service account, and a Workload Identity pool scoped to one repository | free |
-| `secrets` | Secret Manager containers, and the IAM to read them, granted per secret{% if cookiecutter.use_postgres == "yes" %}. Two of them — the database DSN and the token signing key — are generated here and have a version the moment the stack applies{% endif %} | free |
-| `service` | one Cloud Run service scaling to zero{% if cookiecutter.use_postgres == "yes" %}, plus a migration job{% endif %} | nothing while idle |
+| `identities` | a runtime service account, {% if cookiecutter.use_postgres == "yes" %}a migrator service account, {% endif %}a CI service account, and a Workload Identity pool scoped to one repository | free |
+| `secrets` | empty Secret Manager containers, each readable by exactly one account, mounted at the version recorded in stack configuration — never a value | free |
+| `service` | one Cloud Run service scaling to zero{% if cookiecutter.use_postgres == "yes" %}, plus a migration job running as the migrator{% endif %} | nothing while idle |
 {%- if cookiecutter.use_postgres == "yes" %}
-| `database` | Cloud SQL Postgres 16, shared-core, 10 GB HDD, zonal, 7 daily backups | **the only standing charge** |
+| `database` | Cloud SQL Postgres 16, shared-core, 10 GB HDD, zonal, 7 daily backups; IAM database authentication on, connectors required, and the service's IAM database user | **the only standing charge** |
 {%- endif %}
 
 {% if cookiecutter.use_postgres == "yes" -%}
@@ -220,11 +266,24 @@ billing are from Google's Cloud SQL for PostgreSQL documentation and the `gcloud
 create` reference, read 2026-09-21; the SLA exclusions are from the Cloud SQL SLA effective
 2025-10-03.)
 
-The service reaches the database as a pgx DSN over the Unix socket the Cloud SQL connector mounts —
-`postgres://app:<generated>@/app?host=/cloudsql/<connection-name>` — mounted as
-`DATABASE_URL_OVERRIDE` from the `database-url` secret. There is no hostname, no port and no
-authorised network. The migration job runs the same image as `/app/api migrate up`, with that DSN
-and nothing else: no signing key, no Sentry DSN.
+### Two database identities
+
+| | Logs in as | With | May |
+| --- | --- | --- | --- |
+| **The service** | its runtime service account, as the Cloud SQL IAM user `<account>@<project>.iam` | IAM database authentication through the Cloud SQL Go connector in its own process — `DATABASE_AUTH=cloud-sql-iam`, `CLOUD_SQL_INSTANCE`, `DATABASE_NAME`, `DATABASE_USER`. No password exists. | read and write rows, use sequences — nothing that changes the schema |
+| **The migration job** | Cloud SQL's built-in `postgres` login, running as the migrator service account | the password `just infra-secrets` set, mounted from `db-admin-password` at `dbAdminPasswordVersion`, over Cloud Run's Cloud SQL connection — the Unix socket at `/cloudsql/<connection-name>` | own and change the schema |
+
+The stack creates the service's IAM user (`sql.User`, type `CLOUD_IAM_SERVICE_ACCOUNT`) with no
+privileges. `migrate up` grants them, **after** the migrations and on every run, so a table a
+migration just created is covered, and sets default privileges so the next one is too. The runtime
+account holds `cloudsql.client` and `cloudsql.instanceUser` and cannot read the admin password;
+the migrator holds `cloudsql.client` and that one secret, and cannot read the signing key.
+
+The instance keeps a public IP with **zero authorised networks** and **connector enforcement
+`REQUIRED`** — the GCP infrastructure standards' grading for a public-IP instance. Every client is
+on a connector already: the service's Go connector, and the job's Cloud Run Cloud SQL connection,
+which is the Cloud SQL Auth Proxy. There is no hostname to reach and no route for anything else.
+The service has no Cloud SQL volume at all; only the job mounts one.
 {%- else -%}
 Everything in this stack is free at rest. Cloud Run scales to zero and an idle environment costs
 nothing; you pay for requests, image storage, and egress. The bootstrap bucket and KMS key in step
@@ -239,7 +298,7 @@ its author.
 
 | | Where it is set | What it does | Value in the `dev` stack |
 | --- | --- | --- | --- |
-| **The stack's** | `{{ cookiecutter.project_slug }}:environment` in `Pulumi.dev.yaml` | Names resources, and nothing else. `{{ cookiecutter.project_slug }}-dev`, `{{ cookiecutter.project_slug }}-run-dev`{% if cookiecutter.use_postgres == "yes" %}, `{{ cookiecutter.project_slug }}-database-url-dev`{% endif %}. It is also what `IsProduction()` reads to decide{% if cookiecutter.use_postgres == "yes" %} deletion protection and point-in-time recovery{% else %} anything production-only{% endif %}. The application never sees it. | `dev` |
+| **The stack's** | `{{ cookiecutter.project_slug }}:environment` in `Pulumi.dev.yaml` | Names resources, and nothing else. `{{ cookiecutter.project_slug }}-dev`, `{{ cookiecutter.project_slug }}-run-dev`{% if cookiecutter.use_postgres == "yes" %}, `{{ cookiecutter.project_slug }}-jwt-secret-dev`{% endif %}. It is also what `IsProduction()` reads to decide{% if cookiecutter.use_postgres == "yes" %} deletion protection and point-in-time recovery{% else %} anything production-only{% endif %}. The application never sees it. | `dev` |
 | **The application's** | `{{ cookiecutter.project_slug }}:appEnvironment` in `Pulumi.dev.yaml` | Becomes `ENVIRONMENT` on the Cloud Run revision. One of `local`, `test`, `staging`, `production` — the values `backend/internal/config` accepts. It decides how the service *behaves*: `production` serves no `/docs` and no `/openapi.json`. | `staging` |
 
 They are separate because they vary separately. A stack called `dev` that the whole company can
@@ -306,9 +365,11 @@ closes, and browsers that block third-party cookies drop it anyway.
 
 ## Who owns what
 
-The stack owns the *shape* of the Cloud Run resource — service account, scaling, secret wiring,
-probes, CORS{% if cookiecutter.use_postgres == "yes" %}, the Cloud SQL attachment{% endif %}. The CD
-pipeline owns exactly one field: the image tag. The image is declared with `ignore_changes`, and
+The stack owns the *shape* of the Cloud Run resource — service account, scaling, secret wiring and
+the version each secret is pinned to, probes, CORS{% if cookiecutter.use_postgres == "yes" %}, the database settings, the migration job's Cloud SQL
+attachment{% endif %}. The CD pipeline owns exactly one field: the image tag. Secret *values* belong
+to neither: {% if cookiecutter.use_postgres == "yes" %}`just infra-secrets` and {% endif %}a human add them out of band, and the stack only records
+which version to mount. The image is declared with `ignore_changes`, and
 every preview and apply passes `--refresh`.
 
 Both halves are needed. `ignore_changes` suppresses the diff between the program and Pulumi's
@@ -335,7 +396,11 @@ Prepackaged — generated, wired together, and covered by a test:
 | --- | --- |
 | The Cloud Run service, the registry, the identities, the Workload Identity pool, the secret containers{% if cookiecutter.use_postgres == "yes" %}, the database, the migration job{% endif %} | `pulumi/main.go` |
 | The service's CORS allowlist{% if cookiecutter.use_postgres == "yes" %} and refresh-token transport{% endif %} for a browser client, checked before they deploy | `corsOrigins`{% if cookiecutter.use_postgres == "yes" %} and `refreshTransport`{% endif %} in `Pulumi.<stack>.yaml`, read by `pulumi/internal/stackconfig` |
-| Every repository variable the pipelines read | `scripts/sync-github.sh`, straight out of `pulumi stack output` |
+{%- if cookiecutter.use_postgres == "yes" %}
+| The signing key and the database admin password, generated, stored and their versions recorded — never in a file, an argument or state | `scripts/secrets.sh`, via `just infra-secrets` |
+| The service's database identity and its grants | the IAM user in `pulumi/internal/components/database.go`; the grants in `backend/internal/app/migrate.go`, on every `migrate up` |
+{%- endif %}
+| Every repository variable the pipelines read, and the refusal to set them before the secrets exist | `scripts/sync-github.sh`, straight out of `pulumi stack output` |
 | Removing the state bucket and the KMS key, which `pulumi destroy` cannot | `bootstrap/teardown.sh`, via `just infra-teardown` |
 | Backend image build{% if cookiecutter.use_postgres == "yes" %}, migration{% endif %} and deploy | `.github/workflows/cd.yml` |
 | The stack's tests and a preview on every pull request | `.github/workflows/infra.yml` |
@@ -352,7 +417,12 @@ Manual, and no template can change that:
 | A GCP project with a billing account attached | It costs money and names a payer |
 | `./bootstrap/state-bucket.sh`, then `pulumi stack init` | A stack cannot create the bucket that holds its own state |
 | Reading `just infra-preview` before the first apply | The point of the step is that a human looked |
-| A value inside every empty Secret Manager container | A secret value must never exist in this repository |
+{%- if cookiecutter.use_postgres == "yes" %}
+| Running `just infra-secrets`, then `just infra-up` again | It writes to the cloud with your credentials, and a value is generated where it is used, never in this repository |
+{%- endif %}
+{%- if cookiecutter.use_sentry == "yes" %}
+| The Sentry DSN, in its container | It comes from your Sentry account |
+{%- endif %}
 | `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | They identify an account outside this project |
 | A custom domain, its DNS records and its certificate | You own the name; nothing here can |
 | A browser client's origin in `corsOrigins` | It is another repository's output, and that repository is deployed after this one |
@@ -369,9 +439,10 @@ Manual, and no template can change that:
 | Run the bootstrap script | you, once | `./infra/bootstrap/state-bucket.sh` |
 | `pulumi stack init` with the KMS secrets provider | you, once | the bootstrap script prints the command |
 | Read the preview before the first apply | you | `just infra-preview` |
-| Populate every empty Secret Manager container | you | `gcloud secrets versions add` |{% if cookiecutter.use_postgres == "yes" %}
-| Nothing, for `jwt-secret` or `database-url` | the stack | generated, minted and mounted; never typed |{% endif %}{% if cookiecutter.use_sentry == "yes" %}
-| Record the Sentry DSN's version number | you | `sentryDsnVersion` in `Pulumi.<stack>.yaml`, then `just infra-up` |{% endif %}
+{%- if cookiecutter.use_postgres == "yes" %}
+| Generate the signing key and the database admin password, and record their versions | you, once per stack; again with `--rotate` | `just infra-secrets`, then `just infra-up` |
+{%- endif %}{% if cookiecutter.use_sentry == "yes" %}
+| Add the Sentry DSN and record its version number | you | `gcloud secrets versions add … --data-file=-`, `sentryDsnVersion` in `Pulumi.<stack>.yaml`, then `just infra-up` |{% endif %}
 | Set the repository variables | `sync-github.sh` | `just infra-sync-github` |
 | Set `SENTRY_ORG`, `SENTRY_PROJECT` and the `SENTRY_AUTH_TOKEN` secret | you | GitHub settings |
 | Protect `main`, and require CI before merge | you | GitHub settings |

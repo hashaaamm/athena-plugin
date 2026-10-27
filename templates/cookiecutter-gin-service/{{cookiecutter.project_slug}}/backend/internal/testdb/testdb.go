@@ -13,8 +13,9 @@
 //     repository.New; every Store.WithTx inside the code under test becomes a SAVEPOINT within it,
 //     so the real commit-or-rollback logic runs unmodified and the test still leaves nothing behind.
 //
-// The connection comes from the same configuration the service reads (POSTGRES_* or
-// DATABASE_URL_OVERRIDE): the compose test-runner and the CI job both set it. Run the suite with
+// The connection comes from the same configuration the service reads, in DATABASE_AUTH=password
+// mode (POSTGRES_* or DATABASE_URL_OVERRIDE): the compose test-runner and the CI job both set it.
+// Run the suite with
 // `just test` rather than a bare `go test` on the host, unless you have exported those yourself.
 package testdb
 

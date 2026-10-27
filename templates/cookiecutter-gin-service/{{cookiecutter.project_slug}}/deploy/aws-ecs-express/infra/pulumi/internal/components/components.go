@@ -30,8 +30,7 @@ const BootstrapImage = "us-docker.pkg.dev/cloudrun/container/hello"
 // The component's options are passed down rather than left on the component alone, because they
 // carry the explicit AWS provider and any DependsOn the composition root added, and this program
 // does not rely on a component's options reaching its children by inheritance — every child is
-// given them directly. A resource from another package ignores a provider that is not its own, so
-// the random provider is unaffected.
+// given them directly.
 func child(parent pulumi.Resource, opts []pulumi.ResourceOption, extra ...pulumi.ResourceOption) []pulumi.ResourceOption {
 	out := make([]pulumi.ResourceOption, 0, len(opts)+1+len(extra))
 	out = append(out, opts...)

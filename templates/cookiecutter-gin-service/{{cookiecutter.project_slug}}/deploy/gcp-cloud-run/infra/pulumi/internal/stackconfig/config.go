@@ -105,6 +105,19 @@ type StackConfig struct {
 	// infra/README.md has the table of why.
 	DatabaseTier   string
 	DatabaseDiskGB int
+
+	// JWTSecretVersion is the Secret Manager version of the token signing key the service pins,
+	// and DBAdminPasswordVersion the version of the `postgres` login's password the migration job
+	// pins. Empty means "not mounted".
+	//
+	// Neither value is ever in this program, its configuration or its state: Pulumi standards
+	// MUST-3, and ADR-0023 for how this stack meets it. The stack creates both containers empty;
+	// `just infra-secrets` generates each value, adds it as a version, sets the password on the
+	// Cloud SQL login, and records the version numbers here. Until both are set the stack mounts
+	// neither, and secrets_ready says so — which is what sync-github.sh checks before it lets CD
+	// deploy an image that would refuse to start without its key.
+	JWTSecretVersion       string
+	DBAdminPasswordVersion string
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
 
@@ -221,6 +234,17 @@ func SplitOrigins(raw string) []string {
 		}
 	}
 	return origins
+}
+
+// SecretsReady is whether every secret the service cannot start without has a pinned version —
+// the stack's secrets_ready export. A Sentry DSN is optional and does not count.
+func (c StackConfig) SecretsReady() bool {
+{%- if cookiecutter.use_postgres == "yes" %}
+	return c.JWTSecretVersion != "" && c.DBAdminPasswordVersion != ""
+{%- else %}
+	// Nothing to generate: no database means no users, so no signing key.
+	return true
+{%- endif %}
 }
 
 // IsProduction is whether this STACK is the production one. Deletion protection and
@@ -347,6 +371,8 @@ func Load(ctx *pulumi.Context) (StackConfig, error) {
 	if c.DatabaseDiskGB, err = intOr(cfg, "databaseDiskGb", c.DatabaseDiskGB); err != nil {
 		return StackConfig{}, err
 	}
+	c.JWTSecretVersion = strings.TrimSpace(cfg.Get("jwtSecretVersion"))
+	c.DBAdminPasswordVersion = strings.TrimSpace(cfg.Get("dbAdminPasswordVersion"))
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
 	c.SentryDSNVersion = strings.TrimSpace(cfg.Get("sentryDsnVersion"))

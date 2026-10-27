@@ -10,7 +10,6 @@ package infratest
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
@@ -30,6 +29,11 @@ const (
 
 	// StateKeyARN is what the mocked kms.getKey returns for the state key's alias.
 	StateKeyARN = "arn:aws:kms:" + Region + ":" + AccountID + ":key/00000000-0000-0000-0000-000000000000"
+
+	// DatabaseResourceID and MasterSecretARN are what a mocked RDS instance reports: its `db-…`
+	// resource id, and the secret RDS made for the master login — named the way RDS names it.
+	DatabaseResourceID = "db-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	MasterSecretARN    = "arn:aws:secretsmanager:" + Region + ":" + AccountID + ":secret:rds!db-11111111-2222-3333-4444-555555555555-AbCdEf"
 )
 
 // AvailabilityZones is what the mocked aws.getAvailabilityZones returns — deliberately out of
@@ -92,8 +96,6 @@ func (r *Recorder) NewResource(args pulumi.MockResourceArgs) (string, resource.P
 	case "aws:secretsmanager/secret:Secret":
 		// Secrets Manager appends six random characters to every secret ARN.
 		set("arn", arn("secretsmanager", "secret:"+str("name")+"-AbCdEf"))
-	case "aws:secretsmanager/secretVersion:SecretVersion":
-		set("versionId", "11111111-2222-3333-4444-"+fmt.Sprintf("%012d", len(args.Name)))
 	case "aws:ecs/cluster:Cluster":
 		set("arn", arn("ecs", "cluster/"+str("name")))
 	case "aws:ecs/expressGatewayService:ExpressGatewayService":
@@ -113,8 +115,16 @@ func (r *Recorder) NewResource(args pulumi.MockResourceArgs) (string, resource.P
 	case "aws:rds/instance:Instance":
 		set("address", str("identifier")+".abcdefghijkl."+Region+".rds.amazonaws.com")
 		outputs["port"] = resource.NewNumberProperty(5432)
-	case "random:index/randomPassword:RandomPassword":
-		set("result", strings.Repeat("x", 48))
+		set("resourceId", DatabaseResourceID)
+		// What RDS reports once manageMasterUserPassword has made the master secret.
+		if v, ok := args.Inputs["manageMasterUserPassword"]; ok && v.IsBool() && v.BoolValue() {
+			outputs["masterUserSecrets"] = resource.NewArrayProperty([]resource.PropertyValue{
+				resource.NewObjectProperty(resource.PropertyMap{
+					"secretArn":    resource.NewStringProperty(MasterSecretARN),
+					"secretStatus": resource.NewStringProperty("active"),
+				}),
+			})
+		}
 	}
 
 	var deps, ignore []string

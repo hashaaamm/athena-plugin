@@ -1,16 +1,16 @@
 package components
 
 import (
+	"errors"
+
 	"github.com/pulumi/pulumi-aws/sdk/v7/go/aws/rds"
-	"github.com/pulumi/pulumi-random/sdk/v4/go/random"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"{{ cookiecutter.go_module }}/infra/pulumi/internal/stackconfig"
 )
 
 const (
-	// DBName is the logical database and the role that owns it. One name, used in both places and
-	// in the DSN.
+	// DBName is the logical database. The service and the migration task both name it.
 	DBName = "app"
 
 	// PostgresFamily is the parameter-group family for EngineVersion. They move together: a major
@@ -39,34 +39,40 @@ type DatabaseArgs struct {
 // on AWS, and it bills by the hour whether or not anybody uses it. infra/README.md has what each
 // setting is and what moving off the floor buys.
 //
-// The security decision worth understanding: there is no public endpoint and no route to one. The
-// instance sits in isolated subnets, `publiclyAccessible` is off, and its security group admits
-// port 5432 from the app tasks' group and from nothing else — not a CIDR, which would admit
-// whatever lands in those subnets next. Unlike Cloud SQL there is no connector and no IAM on the
-// connection itself; the network path and the password are the boundary, so both are tested.
+// The security decisions worth understanding:
+//
+//   - There is no public endpoint and no route to one. The instance sits in isolated subnets,
+//     `publiclyAccessible` is off, and its security group admits port 5432 from the app tasks'
+//     group and from nothing else — not a CIDR, which would admit whatever lands in those subnets
+//     next.
+//   - Two database identities, and no password in this program, its configuration or its state
+//     (Pulumi standards MUST-3, ADR-0023). The service logs in as databaseAppRole with an IAM token
+//     its task role signs — `iamDatabaseAuthenticationEnabled` — and holds row privileges only. The
+//     migration task logs in as the master user, which owns the schema, with the password RDS
+//     generates, keeps in a Secrets Manager secret of its own and rotates —
+//     `manageMasterUserPassword`. The stack only ever sees that secret's ARN.
 type Database struct {
 	pulumi.ResourceState
 
 	Instance *rds.Instance
-	Password *random.RandomPassword
 
-	// DatabaseURL is the pgx DSN the service reads as DATABASE_URL_OVERRIDE. A secret output: it
-	// carries the password.
-	//
-	// `sslmode=require` and not `verify-full`. The parameter group refuses unencrypted
-	// connections, so require is what makes the client agree; verifying the server's certificate
-	// would need the RDS CA bundle in the image's trust store, and the distroless image has only
-	// the public roots. The connection never leaves the VPC — tasks and instance share it, and the
-	// isolated subnets have no route anywhere else — which is the threat verify-full exists for.
-	DatabaseURL pulumi.StringOutput
+	// Address is the instance's hostname: DATABASE_HOST for the service and the migration task.
+	Address pulumi.StringOutput
+
+	// ResourceID is the instance's `db-…` resource id, the part of an rds-db:connect ARN that
+	// names the instance.
+	ResourceID pulumi.StringOutput
+
+	// MasterSecretARN is the secret RDS keeps the master login in, as JSON with `username` and
+	// `password` keys. Only the migration task's execution role may read it.
+	MasterSecretARN pulumi.StringOutput
 
 	// Identifier is the RDS instance identifier, exported as rds_instance for a human with the
 	// console open.
 	Identifier pulumi.StringOutput
 }
 
-// NewDatabase creates the subnet group, the parameter group, a generated password and the
-// instance.
+// NewDatabase creates the subnet group, the parameter group and the instance.
 func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, args DatabaseArgs, opts ...pulumi.ResourceOption) (*Database, error) {
 	identifier, err := cfg.DBIdentifier()
 	if err != nil {
@@ -89,7 +95,7 @@ func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, args Database
 
 	// rds.force_ssl refuses a plaintext connection at the server, which is the only place that
 	// cannot be argued with: a client that forgets `sslmode` fails to connect rather than
-	// connecting in the clear.
+	// connecting in the clear. An IAM login over plaintext is refused regardless.
 	parameters, err := rds.NewParameterGroup(ctx, "db-parameters", &rds.ParameterGroupArgs{
 		Name:        pulumi.String(cfg.Name(cfg.Slug, PostgresFamily)),
 		Family:      pulumi.String(PostgresFamily),
@@ -100,18 +106,6 @@ func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, args Database
 				Value: pulumi.String("1"),
 			},
 		},
-	}, child(c, opts)...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Generated, never chosen. A password a human typed is a password a human can reuse, and this
-	// one only ever travels from state into Secrets Manager and from there into the task.
-	c.Password, err = random.NewRandomPassword(ctx, "db-password", &random.RandomPasswordArgs{
-		Length:  pulumi.Int(32),
-		Special: pulumi.Bool(true),
-		// Keep it URL-safe: this value ends up inside a DSN.
-		OverrideSpecial: pulumi.String("-_.~"),
 	}, child(c, opts)...)
 	if err != nil {
 		return nil, err
@@ -137,8 +131,13 @@ func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, args Database
 		ParameterGroupName:  parameters.Name,
 		CaCertIdentifier:    pulumi.String(CACertificate),
 		DbName:              pulumi.String(DBName),
-		Username:            pulumi.String(DBName),
-		Password:            c.Password.Result,
+		Username:            pulumi.String(stackconfig.MasterUsername),
+		// RDS generates the master password, stores it in a secret of its own — encrypted with the
+		// account's aws/secretsmanager key, since no key is named — and rotates it. No password
+		// field: the two are mutually exclusive, and this one would put the value in state.
+		ManageMasterUserPassword: pulumi.Bool(true),
+		// The service's login: a token its task role signs, checked by RDS against rds-db:connect.
+		IamDatabaseAuthenticationEnabled: pulumi.Bool(true),
 		// Seven days of automated backups and point-in-time recovery, in a window before the
 		// maintenance one so the two never overlap.
 		BackupRetentionPeriod: pulumi.Int(7),
@@ -149,7 +148,8 @@ func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, args Database
 		// mistake with no undo. Flip it deliberately when you actually mean it.
 		DeletionProtection: pulumi.Bool(cfg.IsProduction()),
 		// Outside production a destroy should leave nothing behind, a final snapshot included —
-		// a snapshot bills for storage, indefinitely, and nobody remembers it exists.
+		// a snapshot bills for storage, indefinitely, and nobody remembers it exists. The master
+		// secret goes with the instance either way: RDS deletes the secret it manages.
 		SkipFinalSnapshot: pulumi.Bool(!cfg.IsProduction()),
 		// A change to the instance waits for the maintenance window in production, and happens
 		// now everywhere else.
@@ -159,17 +159,20 @@ func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, args Database
 		instance.FinalSnapshotIdentifier = pulumi.String(identifier + "-final")
 	}
 
-	c.Instance, err = rds.NewInstance(ctx, "postgres", instance,
-		child(c, opts, pulumi.AdditionalSecretOutputs([]string{"password"}))...)
+	c.Instance, err = rds.NewInstance(ctx, "postgres", instance, child(c, opts)...)
 	if err != nil {
 		return nil, err
 	}
 
 	c.Identifier = c.Instance.Identifier
-	c.DatabaseURL = pulumi.ToSecret(pulumi.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?sslmode=require",
-		DBName, c.Password.Result, c.Instance.Address, PostgresPort, DBName,
-	)).(pulumi.StringOutput)
+	c.Address = c.Instance.Address
+	c.ResourceID = c.Instance.ResourceId
+	c.MasterSecretARN = c.Instance.MasterUserSecrets.ApplyT(func(secrets []rds.InstanceMasterUserSecret) (string, error) {
+		if len(secrets) == 0 || secrets[0].SecretArn == nil {
+			return "", errors.New("RDS reported no master user secret, though manageMasterUserPassword is on")
+		}
+		return *secrets[0].SecretArn, nil
+	}).(pulumi.StringOutput)
 
 	return c, ctx.RegisterResourceOutputs(c, pulumi.Map{"identifier": c.Identifier})
 }

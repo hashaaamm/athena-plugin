@@ -11,8 +11,5 @@ go {{ cookiecutter.go_version }}
 
 require (
 	github.com/pulumi/pulumi-aws/sdk/v7 v7.51.1
-{%- if cookiecutter.use_postgres == "yes" %}
-	github.com/pulumi/pulumi-random/sdk/v4 v4.21.4
-{%- endif %}
 	github.com/pulumi/pulumi/sdk/v3 v3.271.0
 )

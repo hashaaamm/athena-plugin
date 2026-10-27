@@ -43,7 +43,17 @@ preview STACK="dev" *FLAGS: (_require "go") (_require "pulumi")
 up STACK="dev" *FLAGS: (_require "go") (_require "pulumi")
     cd pulumi && pulumi up --stack {{STACK}} --refresh {{FLAGS}}
 
-# Copy stack outputs into GitHub repository variables, which un-gates cd.yml
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# The signing key and the database admin password are never in the program, its configuration or
+# its state (Pulumi standards MUST-3, ADR-0023). The stack creates their containers empty; this
+# generates each value, pipes it into Secret Manager, and records the version for the stack to pin.
+# Run it after the first `up`, then `up` again. Prints no value and writes no file.
+
+# Generate the signing key and the database admin password. `--rotate` replaces them, signing everyone out
+secrets STACK="dev" *FLAGS: (_require "pulumi") (_require "gcloud") (_require "openssl") (_require "curl") (_require "python3")
+    ./scripts/secrets.sh {{STACK}} {{FLAGS}}
+{% endraw %}{% endif %}{% raw %}
+# Copy stack outputs into GitHub repository variables, which un-gates cd.yml. Refuses until secrets_ready
 sync-github STACK="dev": (_require "pulumi") (_require "gh")
     ./scripts/sync-github.sh {{STACK}}
 

@@ -27,9 +27,19 @@ type JobSpec struct {
 	Name    string
 	Command []string
 	Args    []string
-	Env     map[string]string
+	Env     map[string]pulumi.StringInput
 	// SecretEnv maps an environment variable to a logical secret name in ServiceArgs.SecretRefs.
 	SecretEnv map[string]string
+
+	// ServiceAccount is the account the job runs as. Nil means the service's own RuntimeEmail; a
+	// job that holds a credential the service must not — the migration job and its admin
+	// password — runs as an account of its own.
+	ServiceAccount pulumi.StringInput
+
+	// CloudSQLInstance attaches Cloud Run's Cloud SQL connection at /cloudsql, by connection name.
+	// Nil means no database: no volume and no mount rather than an empty one — an unused attachment
+	// is a permission the job does not need.
+	CloudSQLInstance pulumi.StringInput
 }
 
 // ServiceArgs is everything that makes one Cloud Run service different from another. Each field
@@ -49,11 +59,6 @@ type ServiceArgs struct {
 	SecretEnv  map[string]string
 	SecretRefs map[string]SecretRef
 
-	// ConnectionName attaches a Cloud SQL instance at /cloudsql. Nil means no database: no volume
-	// and no mount rather than an empty one — an unused attachment is a permission the service
-	// does not need.
-	ConnectionName pulumi.StringInput
-
 	CPU                     string // default "1"
 	Memory                  string // default "512Mi"
 	Concurrency             int    // default 40
@@ -71,8 +76,8 @@ type ServiceArgs struct {
 // Service is a Cloud Run service, and optionally the jobs that maintain it.
 //
 // Division of ownership, which is what keeps Pulumi and the CD pipeline from fighting: THIS STACK
-// OWNS THE SHAPE — CPU, memory, scaling, service account, secret wiring, the Cloud SQL attachment —
-// and THE PIPELINE OWNS THE IMAGE TAG. Every container image is therefore declared with
+// OWNS THE SHAPE — CPU, memory, scaling, service account, secret wiring, a job's Cloud SQL
+// attachment — and THE PIPELINE OWNS THE IMAGE TAG. Every container image is therefore declared with
 // ignore_changes on the image field.
 //
 // ignore_changes alone is NOT sufficient, and getting this wrong silently rolls the service back
@@ -120,21 +125,6 @@ func NewService(ctx *pulumi.Context, cfg stackconfig.StackConfig, args ServiceAr
 		return nil, err
 	}
 
-	volumes := cloudrunv2.ServiceTemplateVolumeArray{}
-	mounts := cloudrunv2.ServiceTemplateContainerVolumeMountArray{}
-	if args.ConnectionName != nil {
-		volumes = append(volumes, &cloudrunv2.ServiceTemplateVolumeArgs{
-			Name: pulumi.String("cloudsql"),
-			CloudSqlInstance: &cloudrunv2.ServiceTemplateVolumeCloudSqlInstanceArgs{
-				Instances: pulumi.StringArray{args.ConnectionName},
-			},
-		})
-		mounts = append(mounts, &cloudrunv2.ServiceTemplateContainerVolumeMountArgs{
-			Name:      pulumi.String("cloudsql"),
-			MountPath: pulumi.String("/cloudsql"),
-		})
-	}
-
 	// Sorted by name. A map has no order, and a container whose environment comes out in a
 	// different order on the next run is a diff — and a new revision — for nothing.
 	envs := cloudrunv2.ServiceTemplateContainerEnvArray{}
@@ -174,8 +164,7 @@ func NewService(ctx *pulumi.Context, cfg stackconfig.StackConfig, args ServiceAr
 		Ports: &cloudrunv2.ServiceTemplateContainerPortsArgs{
 			ContainerPort: pulumi.Int(args.Port),
 		},
-		Envs:         envs,
-		VolumeMounts: mounts,
+		Envs: envs,
 		// A probe that is marginally too tight fails deploys intermittently, which reads as "the
 		// app is broken" rather than "the budget is wrong".
 		StartupProbe: &cloudrunv2.ServiceTemplateContainerStartupProbeArgs{
@@ -202,7 +191,9 @@ func NewService(ctx *pulumi.Context, cfg stackconfig.StackConfig, args ServiceAr
 				MinInstanceCount: pulumi.Int(cfg.MinInstances),
 				MaxInstanceCount: pulumi.Int(cfg.MaxInstances),
 			},
-			Volumes:    volumes,
+			// No volumes. A service with a database reaches it through the Cloud SQL Go connector
+			// in its own process, authenticated as its own account; a Cloud SQL volume would be a
+			// second way in that it never uses.
 			Containers: cloudrunv2.ServiceTemplateContainerArray{container},
 		},
 	}, child(c, opts, pulumi.IgnoreChanges(ServiceIgnoreChanges))...)
@@ -240,11 +231,11 @@ func (c *Service) job(
 ) (*cloudrunv2.Job, error) {
 	volumes := cloudrunv2.JobTemplateTemplateVolumeArray{}
 	mounts := cloudrunv2.JobTemplateTemplateContainerVolumeMountArray{}
-	if args.ConnectionName != nil {
+	if spec.CloudSQLInstance != nil {
 		volumes = append(volumes, &cloudrunv2.JobTemplateTemplateVolumeArgs{
 			Name: pulumi.String("cloudsql"),
 			CloudSqlInstance: &cloudrunv2.JobTemplateTemplateVolumeCloudSqlInstanceArgs{
-				Instances: pulumi.StringArray{args.ConnectionName},
+				Instances: pulumi.StringArray{spec.CloudSQLInstance},
 			},
 		})
 		mounts = append(mounts, &cloudrunv2.JobTemplateTemplateContainerVolumeMountArgs{
@@ -257,7 +248,7 @@ func (c *Service) job(
 	for _, name := range sortedKeys(spec.Env) {
 		envs = append(envs, &cloudrunv2.JobTemplateTemplateContainerEnvArgs{
 			Name:  pulumi.String(name),
-			Value: pulumi.String(spec.Env[name]),
+			Value: spec.Env[name],
 		})
 	}
 	for _, name := range sortedKeys(spec.SecretEnv) {
@@ -271,6 +262,11 @@ func (c *Service) job(
 				},
 			},
 		})
+	}
+
+	serviceAccount := spec.ServiceAccount
+	if serviceAccount == nil {
+		serviceAccount = args.RuntimeEmail
 	}
 
 	container := &cloudrunv2.JobTemplateTemplateContainerArgs{
@@ -291,7 +287,7 @@ func (c *Service) job(
 			// fails identically and doubles the noise.
 			TaskCount: pulumi.Int(1),
 			Template: &cloudrunv2.JobTemplateTemplateArgs{
-				ServiceAccount: args.RuntimeEmail,
+				ServiceAccount: serviceAccount,
 				MaxRetries:     pulumi.Int(0),
 				Timeout:        pulumi.String("900s"),
 				Volumes:        volumes,

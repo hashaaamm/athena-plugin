@@ -44,6 +44,12 @@ config:
   # has the table of why each value is already its minimum, and what the floor costs you.
   {{ cookiecutter.project_slug }}:databaseTier: db-f1-micro
   {{ cookiecutter.project_slug }}:databaseDiskGb: "10"
+  # Version numbers, not values: `just infra-secrets dev` generates the token signing key and the
+  # database admin password, adds each to its Secret Manager container, sets the password on the
+  # `postgres` login, and writes the two numbers here. Until both are set the stack mounts neither
+  # and exports secrets_ready=false, and sync-github.sh will not un-gate CD. Never type a value here.
+  {{ cookiecutter.project_slug }}:jwtSecretVersion: ""
+  {{ cookiecutter.project_slug }}:dbAdminPasswordVersion: ""
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
   # Set to the version number `gcloud secrets versions add {{ cookiecutter.project_slug }}-sentry-dsn-dev --data-file=-`

@@ -60,6 +60,26 @@ const (
 	TransportBody   = "body"
 	TransportCookie = "cookie"
 )
+
+// How a process authenticates to Postgres: DATABASE_AUTH. One value per way a credential can
+// reach a connection, and the deployed service never uses the first.
+const (
+	// AuthPassword is a password in the DSN: local development, the test suite, CI, and the
+	// deployed migration job, which connects as the admin login.
+	AuthPassword = "password"
+	// AuthRDSIAM is RDS IAM database authentication: the password on every new connection is a
+	// token signed with the task's own AWS identity, valid for fifteen minutes. Nothing stores it.
+	AuthRDSIAM = "rds-iam"
+	// AuthCloudSQLIAM is Cloud SQL IAM database authentication through the Cloud SQL Go connector,
+	// which carries the service account's identity in the client certificate. No password exists.
+	AuthCloudSQLIAM = "cloud-sql-iam"
+)
+
+// DatabaseAuths is every value DATABASE_AUTH accepts.
+var DatabaseAuths = []string{AuthPassword, AuthRDSIAM, AuthCloudSQLIAM}
+
+// DefaultDatabasePort is DATABASE_PORT when it is unset.
+const DefaultDatabasePort = 5432
 {%- endif %}
 
 // Secret is a string that does not print. fmt, %v, %+v, %#v and slog all render it as
@@ -102,15 +122,48 @@ type Config struct {
 {%- if cookiecutter.use_postgres == "yes" %}
 
 	// --- Database -------------------------------------------------------
+	// How this process authenticates to Postgres: `password`, `rds-iam` or `cloud-sql-iam` (the
+	// Auth constants). `password` is the default so that local development, the test suite and CI
+	// need nothing new; a deployed service is set to one of the IAM modes by its stack, and holds
+	// no database password at all.
+	DatabaseAuth string `env:"DATABASE_AUTH" envDefault:"password"`
+
+	// The local parts, in `password` mode only. Compose hands the same POSTGRES_* values to the db
+	// container, which is why they keep the names the Postgres image reads.
 	PostgresHost     string `env:"POSTGRES_HOST"     envDefault:"db"`
 	PostgresPort     int    `env:"POSTGRES_PORT"     envDefault:"5432"`
 	PostgresUser     string `env:"POSTGRES_USER"     envDefault:"{{ cookiecutter.project_slug.replace('-', '_') }}"`
 	PostgresPassword Secret `env:"POSTGRES_PASSWORD" envDefault:"local-only-not-a-secret"`
 	PostgresDB       string `env:"POSTGRES_DB"       envDefault:"{{ cookiecutter.project_slug.replace('-', '_') }}"`
-	// A full pgx DSN; set it and the parts above are ignored. Deployed it is Cloud SQL's Unix
-	// socket — `postgres://<user>:<pw>@/<db>?host=/cloudsql/<connection>` — which cannot be
-	// assembled from a host and a port.
+
+	// The deployed parts. In `password` mode, setting DATABASE_HOST switches from the POSTGRES_*
+	// parts to these — all of them, never a mix — which is how the AWS migration task is handed
+	// the admin login out of RDS's own secret, one JSON key per variable. In the IAM modes they
+	// are the connection itself, minus the password nobody has.
+	//
+	// A DATABASE_HOST that starts with `/` is a Unix socket directory: Cloud SQL's, at
+	// /cloudsql/<connection-name>, for the GCP migration job.
+	DatabaseHost     string `env:"DATABASE_HOST"`
+	DatabasePort     int    `env:"DATABASE_PORT"` // DefaultDatabasePort when unset
+	DatabaseName     string `env:"DATABASE_NAME"`
+	DatabaseUser     string `env:"DATABASE_USER"`
+	DatabasePassword Secret `env:"DATABASE_PASSWORD"`
+	// A full pgx DSN, in `password` mode only; set it and every part above is ignored.
 	DatabaseURLOverride Secret `env:"DATABASE_URL_OVERRIDE"`
+
+	// `rds-iam`: the region the token is signed for. The credentials come from the AWS SDK's
+	// default chain — on ECS, the task role.
+	AWSRegion string `env:"AWS_REGION"`
+	// `cloud-sql-iam`: the instance, as `project:region:instance`. The connector dials it; there is
+	// no host, no port and no socket.
+	CloudSQLInstance string `env:"CLOUD_SQL_INSTANCE"`
+
+	// The application's database identity, which `migrate up` creates (on RDS) and grants on every
+	// run, after the migrations, so a table a migration just added is covered. Empty — the default
+	// — skips the step: locally the one login is both. DATABASE_APP_AUTH is how that identity
+	// connects, `rds-iam` or `cloud-sql-iam`, and decides what the bootstrap does.
+	DatabaseAppRole string `env:"DATABASE_APP_ROLE"`
+	DatabaseAppAuth string `env:"DATABASE_APP_AUTH"`
 
 	// --- Authentication -------------------------------------------------
 	// The HS256 signing key. There is no usable default: RequireSigningKey refuses the sentinel, and
@@ -218,20 +271,53 @@ func (c Config) SlogLevel() (slog.Level, error) {
 }
 {%- if cookiecutter.use_postgres == "yes" %}
 
-// DatabaseURL is the pgx DSN: the override when set, otherwise assembled from the parts. Built with
-// net/url so a password containing `@`, `/` or `%` is escaped rather than silently re-parsed as
-// part of the host.
+// DatabaseURL is the `password`-mode pgx DSN. The precedence, first match wins:
+//
+//  1. DATABASE_URL_OVERRIDE, verbatim;
+//  2. the DATABASE_* parts, when DATABASE_HOST is set;
+//  3. the POSTGRES_* parts — local development, the suite and CI.
+//
+// Built with net/url so a password containing `@`, `/` or `%` is escaped rather than silently
+// re-parsed as part of the host. The IAM modes have no password to put in a DSN; internal/app
+// builds their connection from the parts.
 func (c Config) DatabaseURL() string {
 	if c.DatabaseURLOverride != "" {
 		return c.DatabaseURLOverride.Reveal()
 	}
-	dsn := url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(c.PostgresUser, c.PostgresPassword.Reveal()),
-		Host:   net.JoinHostPort(c.PostgresHost, strconv.Itoa(c.PostgresPort)),
-		Path:   "/" + c.PostgresDB,
+	if c.DatabaseHost == "" {
+		return pgURL(c.PostgresHost, c.PostgresPort, c.PostgresDB, url.UserPassword(c.PostgresUser, c.PostgresPassword.Reveal()))
+	}
+	return pgURL(c.DatabaseHost, c.DatabaseTCPPort(), c.DatabaseName, url.UserPassword(c.DatabaseUser, c.DatabasePassword.Reveal()))
+}
+
+// DatabaseTCPPort is DATABASE_PORT, or DefaultDatabasePort when it is unset.
+func (c Config) DatabaseTCPPort() int {
+	if c.DatabasePort == 0 {
+		return DefaultDatabasePort
+	}
+	return c.DatabasePort
+}
+
+// pgURL is a pgx DSN for a host and port, or for a Unix socket directory — a host starting with
+// `/`, which pgx takes from the `host` query parameter because a path is not a URL authority.
+func pgURL(host string, port int, database string, user *url.Userinfo) string {
+	dsn := url.URL{Scheme: "postgres", User: user, Path: "/" + database}
+	if strings.HasPrefix(host, "/") {
+		// The port still matters: it names the socket file, .s.PGSQL.<port>.
+		dsn.Host = net.JoinHostPort("", strconv.Itoa(port))
+		dsn.RawQuery = url.Values{"host": {host}}.Encode()
+	} else {
+		dsn.Host = net.JoinHostPort(host, strconv.Itoa(port))
 	}
 	return dsn.String()
+}
+
+// databasePassword is the password DatabaseURL assembles, for the deployed-placeholder check.
+func (c Config) databasePassword() string {
+	if c.DatabaseHost == "" {
+		return c.PostgresPassword.Reveal()
+	}
+	return c.DatabasePassword.Reveal()
 }
 
 // RequireSigningKey refuses to serve HTTP with a signing key anybody could guess. Called when the
@@ -286,12 +372,70 @@ func (c Config) Validate() error {
 {%- if cookiecutter.use_postgres == "yes" %}
 
 func (c Config) validateDatabase() []error {
-	// A placeholder credential in production *starts*, and a service that starts with the wrong
-	// credentials fails later and much further from the cause. The override carries its own.
-	if c.IsDeployed() && c.DatabaseURLOverride == "" && c.PostgresPassword.Reveal() == PlaceholderSecret {
-		return []error{errors.New("POSTGRES_PASSWORD must be set outside local and test")}
+	var problems []error
+	missing := func(pairs ...[2]string) {
+		for _, pair := range pairs {
+			if strings.TrimSpace(pair[1]) == "" {
+				problems = append(problems, fmt.Errorf("DATABASE_AUTH=%s requires %s", c.DatabaseAuth, pair[0]))
+			}
+		}
 	}
-	return nil
+	// A credential beside IAM authentication is one nothing reads — and the sign of a stack that
+	// is wired to the wrong mode, which is better refused at start-up than discovered as a login
+	// that works for the wrong reason.
+	noPassword := func() {
+		if c.DatabaseURLOverride != "" || c.DatabasePassword != "" {
+			problems = append(problems, fmt.Errorf(
+				"DATABASE_AUTH=%s takes no DATABASE_PASSWORD or DATABASE_URL_OVERRIDE: the identity is the credential", c.DatabaseAuth))
+		}
+	}
+	switch c.DatabaseAuth {
+	case AuthPassword:
+		if c.DatabaseURLOverride == "" && c.DatabaseHost != "" {
+			missing([2]string{"DATABASE_NAME", c.DatabaseName}, [2]string{"DATABASE_USER", c.DatabaseUser})
+		}
+		// A placeholder credential in production *starts*, and a service that starts with the
+		// wrong credentials fails later and much further from the cause. The override carries
+		// its own.
+		if password := c.databasePassword(); c.IsDeployed() && c.DatabaseURLOverride == "" &&
+			(password == "" || password == PlaceholderSecret) {
+			problems = append(problems, errors.New(
+				"DATABASE_PASSWORD (POSTGRES_PASSWORD when DATABASE_HOST is unset) must be set outside local and test"))
+		}
+	case AuthRDSIAM:
+		missing(
+			[2]string{"DATABASE_HOST", c.DatabaseHost}, [2]string{"DATABASE_NAME", c.DatabaseName},
+			[2]string{"DATABASE_USER", c.DatabaseUser}, [2]string{"AWS_REGION", c.AWSRegion},
+		)
+		noPassword()
+	case AuthCloudSQLIAM:
+		missing(
+			[2]string{"CLOUD_SQL_INSTANCE", c.CloudSQLInstance}, [2]string{"DATABASE_NAME", c.DatabaseName},
+			[2]string{"DATABASE_USER", c.DatabaseUser},
+		)
+		// project:region:instance, where a domain-scoped project id carries a colon of its own.
+		if parts := strings.Split(c.CloudSQLInstance, ":"); c.CloudSQLInstance != "" &&
+			(len(parts) < 3 || slices.Contains(parts, "")) {
+			problems = append(problems, fmt.Errorf(
+				"CLOUD_SQL_INSTANCE %q is not a connection name such as project:region:instance", c.CloudSQLInstance))
+		}
+		noPassword()
+	default:
+		problems = append(problems, fmt.Errorf("DATABASE_AUTH must be one of %v, not %q", DatabaseAuths, c.DatabaseAuth))
+	}
+	if c.DatabasePort < 0 || c.DatabasePort > 65535 {
+		problems = append(problems, fmt.Errorf("DATABASE_PORT must be between 1 and 65535, not %d", c.DatabasePort))
+	}
+	// The bootstrap needs both or neither: a role with no way to connect is a role nothing uses,
+	// and a way to connect with no role is a grant to nobody.
+	switch {
+	case c.DatabaseAppRole == "" && c.DatabaseAppAuth != "":
+		problems = append(problems, errors.New("DATABASE_APP_AUTH requires DATABASE_APP_ROLE"))
+	case c.DatabaseAppRole != "" && c.DatabaseAppAuth != AuthRDSIAM && c.DatabaseAppAuth != AuthCloudSQLIAM:
+		problems = append(problems, fmt.Errorf(
+			"DATABASE_APP_ROLE requires DATABASE_APP_AUTH to be %s or %s, not %q", AuthRDSIAM, AuthCloudSQLIAM, c.DatabaseAppAuth))
+	}
+	return problems
 }
 
 func (c Config) validateAuth() []error {

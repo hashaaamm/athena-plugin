@@ -9,9 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-{% if cookiecutter.use_postgres == "yes" %}
-	"github.com/jackc/pgx/v5/pgxpool"
-{% endif %}
+
 	"{{ cookiecutter.go_module }}/internal/config"
 {%- if cookiecutter.use_sentry == "yes" %}
 	"{{ cookiecutter.go_module }}/internal/observability"
@@ -34,12 +32,12 @@ func Serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 {%- endif %}
 {%- if cookiecutter.use_postgres == "yes" %}
 
-	pool, err := openPool(ctx, cfg)
+	pool, closePool, err := openPool(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	// Release connections on shutdown, or every redeploy leaks them until Postgres refuses new ones.
-	defer pool.Close()
+	defer closePool()
 
 	router, err := NewRouter(cfg, Deps{Logger: logger, DB: pool})
 {%- else %}
@@ -87,40 +85,6 @@ func Serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	return nil
 }
-{%- if cookiecutter.use_postgres == "yes" %}
-
-// openPool builds the pgx pool. Lazy: no connection is made until the first query, so the process
-// starts — and /health/live answers — while the database is still coming up, and /health/ready says
-// so. A server that refuses to start without its database turns a database blip into a crash loop.
-//
-// Statements use pgx's default, the per-connection prepared-statement cache, which is right for a
-// direct connection — including Cloud SQL's Unix socket, which is the database itself rather than a
-// pooler. Behind a transaction-mode pooler (PgBouncer, or Cloud SQL managed connection pooling in
-// transaction mode) a prepared statement outlives the server connection it was prepared on; set
-// `poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec` there. Ask Athena for the
-// database access rules.
-//
-// Pool size is pgx's default, max(4, CPUs). Multiply it by Cloud Run's maximum instance count before
-// raising it: the product is what the database has to accept, and a small Cloud SQL tier accepts
-// fewer connections than a busy service scales to.
-func openPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
-	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL())
-	if err != nil {
-		// Never wrap the parse error itself: it can quote the DSN, password included.
-		return nil, errors.New("DATABASE_URL_OVERRIDE / POSTGRES_* do not form a valid connection string")
-	}
-	// Recycled before Cloud SQL or a proxy in between drops an idle connection under us, which would
-	// otherwise surface as one failed query per stale connection after every quiet spell.
-	poolConfig.MaxConnIdleTime = 5 * time.Minute
-	poolConfig.MaxConnLifetime = 30 * time.Minute
-	poolConfig.HealthCheckPeriod = time.Minute
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("create database pool: %w", err)
-	}
-	return pool, nil
-}
-{%- endif %}
 
 // Healthcheck is the container's HEALTHCHECK: GET /health/live on this container's own port. A
 // subcommand of the binary because the production image is distroless — no shell, no curl — and

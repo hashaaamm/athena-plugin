@@ -314,6 +314,37 @@ func TestLoadReadsEveryOptionalKey(t *testing.T) {
 	}
 {%- endif %}
 }
+{%- if cookiecutter.use_postgres == "yes" %}
+
+// secrets_ready is what sync-github.sh checks before it un-gates CD, and the signing key is the
+// one secret the service cannot start without.
+func TestTheSecretsAreReadyOnlyOnceTheSigningKeyHasAVersion(t *testing.T) {
+	got, err := load(t, required())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.JWTSecretVersion != "" || got.SecretsReady() {
+		t.Errorf("jwtSecretVersion = %q, ready = %v before anything is configured", got.JWTSecretVersion, got.SecretsReady())
+	}
+	config := required()
+	config["jwtSecretVersion"] = " a1b2c3d4-0000-0000-0000-000000000000 "
+	config["databaseAppRole"] = "orders_api"
+	if got, err = load(t, config); err != nil {
+		t.Fatal(err)
+	}
+	if got.JWTSecretVersion != "a1b2c3d4-0000-0000-0000-000000000000" || !got.SecretsReady() || got.DatabaseAppRole != "orders_api" {
+		t.Errorf("Load() = %+v", got)
+	}
+}
+{%- else %}
+
+// Without a database there is no signing key to wait for.
+func TestWithoutADatabaseTheSecretsAreAlwaysReady(t *testing.T) {
+	if !base().SecretsReady() {
+		t.Error("secrets_ready is false on a stack with nothing to generate")
+	}
+}
+{%- endif %}
 
 func TestLoadRefusesATypoRatherThanDefaultingIt(t *testing.T) {
 	// A value that silently becomes a default is a stack doing something nobody configured.

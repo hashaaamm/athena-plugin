@@ -39,6 +39,7 @@ var allExports = []string{
 	"preview_role_arn",
 	"rds_instance",
 	"runtime_role_arn",
+	"secrets_ready",
 	"service_url",
 }
 
@@ -144,6 +145,24 @@ func TestThePipelineExportsAreNeverEmpty(t *testing.T) {
 	}
 	if s.exports["ecs_task_security_group"] != "app-id" {
 		t.Errorf("ecs_task_security_group = %q, want the app group", s.exports["ecs_task_security_group"])
+	}
+}
+
+// --- Secrets ----------------------------------------------------------------------------------
+
+func TestTheStackWritesNoSecretValue(t *testing.T) {
+	// Pulumi standards MUST-3: no secret value in the program, its configuration or its state. A
+	// generated value is in state like any other, so the stack generates none and writes no
+	// version; `just infra-secrets` does both, out of band.
+	for _, mutate := range []func(*stackconfig.StackConfig){nil, withBrowserClient} {
+		for _, res := range deployed(t, mutate).Resources() {
+			if strings.HasPrefix(res.Type, "random:") || res.Type == "aws:secretsmanager/secretVersion:SecretVersion" {
+				t.Errorf("%s %q puts a secret value in state", res.Type, res.Name)
+			}
+			if len(res.Secret) != 0 {
+				t.Errorf("%s %q has secret inputs %v", res.Type, res.Name, res.Secret)
+			}
+		}
 	}
 }
 

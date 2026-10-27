@@ -130,6 +130,11 @@ infra-preview STACK="dev" *FLAGS:
 infra-up STACK="dev" *FLAGS:
     {{infra}} up {{STACK}} {{FLAGS}}
 
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# Generate the secrets the stack creates empty, and record their versions. `--rotate` replaces them
+infra-secrets STACK="dev" *FLAGS:
+    {{infra}} secrets {{STACK}} {{FLAGS}}
+{% endraw %}{% endif %}{% raw %}
 # Copy stack outputs into GitHub repository variables, which un-gates cd.yml
 infra-sync-github STACK="dev":
     {{infra}} sync-github {{STACK}}

@@ -70,13 +70,21 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
   the annotation and run `just gen`.
 - Do not modify `.github/workflows/` without saying so explicitly in your summary.
 - Do not run `{% if cookiecutter.deploy_target == "aws-ecs-express" %}aws{% else %}gcloud{% endif %}` mutations or anything that changes cloud state. That includes
-  `just infra-up` and `just infra-sync-github`, and the bootstrap script. `just infra-test` and
+  `just infra-up`, {% if cookiecutter.use_postgres == "yes" %}`just infra-secrets`, {% endif %}`just infra-sync-github`, and the bootstrap script. `just infra-test` and
   `just infra-preview` are the two that change nothing; everything else under `infra/` needs a
   human who has read the preview.
 - Do not run `just infra-destroy` or `just infra-teardown`, ever, and do not suggest removing the
   guards on them. The teardown script deletes the Pulumi state bucket, which is irreversible and
   is the only record of what exists.
-- Do not put a secret value in `infra/`. The stack creates empty {% if cookiecutter.deploy_target == "aws-ecs-express" %}secrets{% else %}containers{% endif %}; a person fills them.
+- Do not put a secret value in `infra/` — not in the program, not in `Pulumi.<stack>.yaml`, not in
+  state, and not as a generated value either (ADR-0023). The stack creates empty {% if cookiecutter.deploy_target == "aws-ecs-express" %}secrets{% else %}containers{% endif %}{% if cookiecutter.use_postgres == "yes" %};
+  `just infra-secrets` or a person fills them, and only the version goes into stack configuration{% else %}; a
+  person fills them, and only the version goes into stack configuration{% endif %}.
+{%- if cookiecutter.use_postgres == "yes" %}
+- Do not give the deployed service a database password. It authenticates with
+  `DATABASE_AUTH={% if cookiecutter.deploy_target == "aws-ecs-express" %}rds-iam{% else %}cloud-sql-iam{% endif %}` as its own cloud identity and holds row privileges only; schema changes
+  belong to the migration {% if cookiecutter.deploy_target == "aws-ecs-express" %}task{% else %}job{% endif %}, which grants the service's role after every run.
+{%- endif %}
 
 ## Recurring failures
 

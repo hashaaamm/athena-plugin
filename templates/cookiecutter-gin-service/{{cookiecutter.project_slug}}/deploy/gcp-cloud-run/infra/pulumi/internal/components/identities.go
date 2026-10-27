@@ -14,16 +14,30 @@ import (
 	"{{ cookiecutter.go_module }}/infra/pulumi/internal/stackconfig"
 )
 
-// RuntimeRoles are granted to the Cloud Run service and its jobs.
+// RuntimeRoles are granted to the Cloud Run service.
 //
 // Secret ACCESS is deliberately absent: it is granted per secret in secrets.go, so a secret added
 // later is not automatically readable by everything that can already read these.
 var RuntimeRoles = []string{
 	"roles/logging.logWriter",
 {%- if cookiecutter.use_postgres == "yes" %}
+	// The connector's half and the database's half of IAM database authentication: client opens
+	// the tunnel to the instance, instanceUser lets the account log in as its own IAM database user.
+	// Neither reaches anything a password would.
 	"roles/cloudsql.client",
+	"roles/cloudsql.instanceUser",
 {%- endif %}
 }
+{%- if cookiecutter.use_postgres == "yes" %}
+
+// MigratorRoles are granted to the migration job's account, which connects through Cloud Run's
+// Cloud SQL connection as the `postgres` login. No instanceUser: it does not log in with IAM. Its
+// one secret, the admin password, is granted in secrets.go.
+var MigratorRoles = []string{
+	"roles/logging.logWriter",
+	"roles/cloudsql.client",
+}
+{%- endif %}
 
 // CIRoles are granted to the GitHub Actions identity.
 //
@@ -63,9 +77,18 @@ type IdentitiesArgs struct {
 
 // Identities is the service accounts and Workload Identity Federation.
 //
-// Two accounts, and the split is the point: the CI account can build and deploy but cannot read
-// the database or a secret's value; the runtime account can read its own secrets but cannot
-// deploy. Neither has a downloadable key. A downloaded service-account JSON key is the most-stolen
+{%- if cookiecutter.use_postgres == "yes" %}
+// Three accounts, and the split is the point: the CI account can build and deploy but cannot read
+// the database or a secret's value; the runtime account can read and write rows as its own IAM
+// database user, and read its own secrets, but cannot deploy or change the schema; the migrator
+// account can change the schema, holding the one database password in the stack, and nothing
+// else.
+{%- else %}
+// Two accounts, and the split is the point: the CI account can build and deploy but cannot read a
+// secret's value; the runtime account can read its own secrets but cannot deploy.
+{%- endif %}
+//
+// No account has a downloadable key. A downloaded service-account JSON key is the most-stolen
 // credential class there is, and the house rule is that CI authenticates with Workload Identity
 // Federation instead — ask Athena for the Pulumi standards and the GitHub Actions standards.
 type Identities struct {
@@ -75,6 +98,11 @@ type Identities struct {
 	CI       *serviceaccount.Account
 	Pool     *iam.WorkloadIdentityPool
 	Provider *iam.WorkloadIdentityPoolProvider
+{%- if cookiecutter.use_postgres == "yes" %}
+
+	// Migrator is what the migration job runs as.
+	Migrator *serviceaccount.Account
+{%- endif %}
 
 	// ProviderName is the value GitHub Actions needs as the WIF_PROVIDER repository variable.
 	ProviderName pulumi.StringOutput
@@ -93,6 +121,11 @@ func NewIdentities(
 	if c.Runtime, err = c.account(ctx, cfg, opts, "runtime-sa", "run", cfg.Slug+" runtime", RuntimeRoles); err != nil {
 		return nil, err
 	}
+{%- if cookiecutter.use_postgres == "yes" %}
+	if c.Migrator, err = c.account(ctx, cfg, opts, "migrator-sa", "migrate", cfg.Slug+" migrations", MigratorRoles); err != nil {
+		return nil, err
+	}
+{%- endif %}
 	if c.CI, err = c.account(ctx, cfg, opts, "ci-sa", "ci", cfg.Slug+" CI", CIRoles); err != nil {
 		return nil, err
 	}
@@ -109,6 +142,16 @@ func NewIdentities(
 	}, child(c, opts)...); err != nil {
 		return nil, err
 	}
+{%- if cookiecutter.use_postgres == "yes" %}
+	// The same, for the migration job: CD updates its image, and the job runs as the migrator.
+	if _, err := serviceaccount.NewIAMMember(ctx, "ci-acts-as-migrator", &serviceaccount.IAMMemberArgs{
+		ServiceAccountId: c.Migrator.Name,
+		Role:             pulumi.String("roles/iam.serviceAccountUser"),
+		Member:           ciMember,
+	}, child(c, opts)...); err != nil {
+		return nil, err
+	}
+{%- endif %}
 
 	// Read and write the Pulumi state bucket, so the preview job on a pull request can select the
 	// stack. Bucket-scoped rather than a project storage role, because a project-level storage role

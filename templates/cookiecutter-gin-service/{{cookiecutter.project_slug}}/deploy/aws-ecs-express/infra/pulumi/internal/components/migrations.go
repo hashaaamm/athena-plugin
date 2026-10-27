@@ -17,7 +17,9 @@ const MigrateContainer = "migrate"
 // MigrationsArgs is what Migrations needs beyond the configuration.
 type MigrationsArgs struct {
 	ExecutionRoleARN pulumi.StringInput
-	TaskRoleARN      pulumi.StringInput
+	// TaskRoleARN is the task's own AWS identity. Nil means none, which is right for a migration:
+	// it logs in with a password ECS resolved before the container started, and calls no AWS API.
+	TaskRoleARN pulumi.StringInput
 
 	// EntryPoint and Command are the image's ENTRYPOINT and CMD for this task. ECS overrides the
 	// two separately, exactly as Docker does, so the binary goes in one and the subcommand in the
@@ -25,8 +27,8 @@ type MigrationsArgs struct {
 	EntryPoint []string
 	Command    []string
 
-	// Env is the plain environment, the same one the service runs with.
-	Env map[string]string
+	// Env is the plain environment.
+	Env map[string]pulumi.StringInput
 	// SecretEnv maps an environment variable to a logical secret name in SecretRefs.
 	SecretEnv  map[string]string
 	SecretRefs map[string]SecretRef
@@ -62,11 +64,16 @@ func NewMigrations(ctx *pulumi.Context, cfg stackconfig.StackConfig, args Migrat
 		return nil, err
 	}
 
-	// The container definition is a JSON string in the provider's schema, so the two values that
-	// are outputs — the log group and each secret reference — are resolved first.
-	names := sortedKeys(args.SecretEnv)
+	// The container definition is a JSON string in the provider's schema, so every value that is
+	// an output — the log group, an environment value such as the database's address, and each
+	// secret reference — is resolved first, in a fixed order, and cut back apart by position.
+	envNames := sortedKeys(args.Env)
+	secretNames := sortedKeys(args.SecretEnv)
 	inputs := []any{args.LogGroup}
-	for _, name := range names {
+	for _, name := range envNames {
+		inputs = append(inputs, args.Env[name])
+	}
+	for _, name := range secretNames {
 		inputs = append(inputs, args.SecretRefs[args.SecretEnv[name]].ValueFrom())
 	}
 	definitions := pulumi.All(inputs...).ApplyT(func(resolved []any) (string, error) {
@@ -77,12 +84,13 @@ func NewMigrations(ctx *pulumi.Context, cfg stackconfig.StackConfig, args Migrat
 			ValueFrom string `json:"valueFrom,omitempty"`
 		}
 		environment := []pair{}
-		for _, name := range sortedKeys(args.Env) {
-			environment = append(environment, pair{Name: name, Value: args.Env[name]})
+		for i, name := range envNames {
+			value, _ := resolved[1+i].(string)
+			environment = append(environment, pair{Name: name, Value: value})
 		}
 		secrets := []pair{}
-		for i, name := range names {
-			valueFrom, _ := resolved[1+i].(string)
+		for i, name := range secretNames {
+			valueFrom, _ := resolved[1+len(envNames)+i].(string)
 			secrets = append(secrets, pair{Name: name, ValueFrom: valueFrom})
 		}
 		data, err := json.Marshal([]map[string]any{

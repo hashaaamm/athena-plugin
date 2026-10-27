@@ -288,6 +288,41 @@ func TestLoadReadsTheBrowserClientSettings(t *testing.T) {
 {%- endif %}
 }
 
+{%- if cookiecutter.use_postgres == "yes" %}
+
+// secrets_ready is what sync-github.sh checks before it un-gates CD: the service cannot start
+// without its signing key, nor the migration job without the admin password.
+func TestTheSecretsAreReadyOnlyOnceBothHaveAVersion(t *testing.T) {
+	got, err := load(t, required())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.JWTSecretVersion != "" || got.DBAdminPasswordVersion != "" || got.SecretsReady() {
+		t.Errorf("Load() = %+v, ready = %v before anything is configured", got, got.SecretsReady())
+	}
+	config := required()
+	config["jwtSecretVersion"] = "3"
+	if got, _ = load(t, config); got.SecretsReady() {
+		t.Error("ready with the admin password still missing")
+	}
+	config["dbAdminPasswordVersion"] = " 4 "
+	if got, err = load(t, config); err != nil {
+		t.Fatal(err)
+	}
+	if got.JWTSecretVersion != "3" || got.DBAdminPasswordVersion != "4" || !got.SecretsReady() {
+		t.Errorf("Load() = %+v, ready = %v", got, got.SecretsReady())
+	}
+}
+{%- else %}
+
+// Without a database there is no signing key and no admin password to wait for.
+func TestWithoutADatabaseTheSecretsAreAlwaysReady(t *testing.T) {
+	if !base().SecretsReady() {
+		t.Error("secrets_ready is false on a stack with nothing to generate")
+	}
+}
+{%- endif %}
+
 func TestLoadRefusesATypoRatherThanDefaultingIt(t *testing.T) {
 	// A value that silently becomes a default is a stack doing something nobody configured.
 	typos := map[string]string{"maxInstances": "four", "corsOrigins": "app.example.com"}

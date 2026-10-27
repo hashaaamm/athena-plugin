@@ -10,12 +10,12 @@ import (
 	"{{ cookiecutter.go_module }}/infra/pulumi/internal/components"
 )
 
-func newSecrets(t *testing.T, manual map[string]string) *components.Secrets {
+func newSecrets(t *testing.T, versions map[string]string) *components.Secrets {
 	t.Helper()
 	var secrets *components.Secrets
 	run(t, func(ctx *pulumi.Context) error {
 		var err error
-		secrets, err = components.NewSecrets(ctx, cfg, components.SecretsArgs{ManualVersions: manual})
+		secrets, err = components.NewSecrets(ctx, cfg, components.SecretsArgs{Versions: versions})
 		return err
 	})
 	return secrets
@@ -24,18 +24,12 @@ func newSecrets(t *testing.T, manual map[string]string) *components.Secrets {
 func TestTheSentrySecretIsCreatedEmptyAndMountedByNothing(t *testing.T) {
 	// It holds a value that originates outside this stack, so the stack cannot create a version.
 	// Nothing may mount it until a human has added one and set sentryDsnVersion.
-	if !slices.Contains(components.ManualSecrets, "sentry-dsn") {
-		t.Fatal("sentry-dsn must be a manual secret")
+	if !slices.Contains(components.SecretNames, "sentry-dsn") {
+		t.Fatal("sentry-dsn is not one of the stack's secrets")
 	}
 	secrets := newSecrets(t, nil)
 	if _, ok := secrets.ARNs["sentry-dsn"]; !ok {
 		t.Error("no sentry-dsn secret")
-	}
-	if len(secrets.Versions) != 0 {
-		t.Errorf("%d versions; the stack must not invent a Sentry DSN", len(secrets.Versions))
-	}
-	if len(secrets.GeneratedARNs) != 0 {
-		t.Error("the Sentry DSN is listed as generated, so the preview role could read it")
 	}
 	if _, ok := secrets.Refs["sentry-dsn"]; ok {
 		t.Error("sentry-dsn has a reference before anybody populated it")

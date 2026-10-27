@@ -9,7 +9,6 @@ package infratest
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
@@ -61,8 +60,6 @@ func (r *Recorder) NewResource(args pulumi.MockResourceArgs) (string, resource.P
 	switch args.TypeToken {
 	case "gcp:sql/databaseInstance:DatabaseInstance":
 		set("connectionName", Project+":europe-west1:"+str("name"))
-	case "gcp:secretmanager/secretVersion:SecretVersion":
-		set("version", "1")
 	case "gcp:serviceaccount/account:Account":
 		set("email", str("accountId")+"@"+Project+".iam.gserviceaccount.com")
 		set("name", "projects/"+Project+"/serviceAccounts/"+str("accountId"))
@@ -71,8 +68,6 @@ func (r *Recorder) NewResource(args pulumi.MockResourceArgs) (string, resource.P
 	case "gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider":
 		set("name", fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
 			ProjectNumber, str("workloadIdentityPoolId"), str("workloadIdentityPoolProviderId")))
-	case "random:index/randomPassword:RandomPassword":
-		set("result", strings.Repeat("x", 48))
 	}
 
 	var deps []string

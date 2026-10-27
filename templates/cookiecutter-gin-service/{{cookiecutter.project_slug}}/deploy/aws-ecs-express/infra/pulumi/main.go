@@ -19,12 +19,10 @@ package main
 import (
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/pulumi/pulumi-aws/sdk/v7/go/aws"
-{%- if cookiecutter.use_postgres == "yes" %}
-	"github.com/pulumi/pulumi-random/sdk/v4/go/random"
-{%- endif %}
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"{{ cookiecutter.go_module }}/infra/pulumi/internal/components"
@@ -99,8 +97,11 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 		return nil, err
 	}
 
-	secretsArgs := components.SecretsArgs{}
+	// Every secret the stack creates is empty, and mounted only once its VersionId is in stack
+	// configuration — a secret with no value is a task that cannot start.
+	secretsArgs := components.SecretsArgs{Versions: map[string]string{}}
 {%- if cookiecutter.use_postgres == "yes" %}
+	secretsArgs.Versions["jwt-secret"] = cfg.JWTSecretVersion
 
 	database, err := components.NewDatabase(ctx, cfg, components.DatabaseArgs{
 		SubnetIDs:       network.IsolatedSubnetIDs,
@@ -109,26 +110,9 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// The HS256 key the service signs access tokens with. Generated, never chosen: a key a human
-	// typed is a key a human can reuse, paste into a ticket, or make twelve characters long. 48
-	// alphanumerics is well past the 32-character floor `serve` enforces at start-up. It travels
-	// from Secrets Manager into the service's environment and nowhere else — in particular, the
-	// migration task below is not given it, because it signs nothing.
-	jwtSecret, err := random.NewRandomPassword(ctx, "jwt-secret", &random.RandomPasswordArgs{
-		Length:  pulumi.Int(48),
-		Special: pulumi.Bool(false),
-	})
-	if err != nil {
-		return nil, err
-	}
-	secretsArgs.Generated = map[string]pulumi.StringInput{
-		"database-url": database.DatabaseURL,
-		"jwt-secret":   jwtSecret.Result,
-	}
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-	secretsArgs.ManualVersions = map[string]string{"sentry-dsn": cfg.SentryDSNVersion}
+	secretsArgs.Versions["sentry-dsn"] = cfg.SentryDSNVersion
 {%- endif %}
 
 	secrets, err := components.NewSecrets(ctx, cfg, secretsArgs, opts...)
@@ -140,10 +124,13 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 	for _, name := range slices.Sorted(maps.Keys(secrets.ARNs)) {
 		secretARNs = append(secretARNs, secrets.ARNs[name])
 	}
-	identities, err := components.NewIdentities(ctx, cfg, components.IdentitiesArgs{
-		SecretARNs:          secretARNs,
-		GeneratedSecretARNs: secrets.GeneratedARNs,
-	}, opts...)
+	identitiesArgs := components.IdentitiesArgs{SecretARNs: secretARNs}
+{%- if cookiecutter.use_postgres == "yes" %}
+	identitiesArgs.MasterSecretARN = database.MasterSecretARN
+	identitiesArgs.DatabaseResourceID = database.ResourceID
+	identitiesArgs.DatabaseAppRole = cfg.DatabaseAppRole
+{%- endif %}
+	identities, err := components.NewIdentities(ctx, cfg, identitiesArgs, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -159,35 +146,35 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 	// No PORT: the production image sets 8080, and Express Mode routes to the container port
 	// declared below. No worker count either — a Go binary is one process using every core it is
 	// given.
-	runtimeEnv := map[string]string{
-		"ENVIRONMENT": cfg.AppEnvironment,
-		"LOG_LEVEL":   "INFO",
+	runtimeEnv := map[string]pulumi.StringInput{
+		"ENVIRONMENT": pulumi.String(cfg.AppEnvironment),
+		"LOG_LEVEL":   pulumi.String("INFO"),
 		// JSON everywhere a log aggregator reads it.
-		"JSON_LOGS": "true",
+		"JSON_LOGS": pulumi.String("true"),
 	}
 
 	// Environment variable name -> the logical secret it is mounted from.
 	secretEnv := map[string]string{}
 {%- if cookiecutter.use_postgres == "yes" %}
-	secretEnv["DATABASE_URL_OVERRIDE"] = "database-url"
-	secretEnv["JWT_SECRET"] = "jwt-secret"
+	// Without it the service refuses to start, which is why secrets_ready gates CD on it. The
+	// first `up` runs the bootstrap image, which needs no key.
+	if cfg.JWTSecretVersion != "" {
+		secretEnv["JWT_SECRET"] = "jwt-secret"
+	}
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-	// Mounted only once its VersionId is in stack configuration, because a secret with no value
-	// is a task that cannot start. Add the value, then set sentryDsnVersion.
+	// Add the value, then set sentryDsnVersion.
 	if cfg.SentryDSNVersion != "" {
 		secretEnv["SENTRY_DSN"] = "sentry-dsn"
 	}
 {%- endif %}
 
-	// What the backend service runs with: runtimeEnv plus the HTTP-facing settings. Separate from
-	// runtimeEnv because the migration task shares that map and serves no HTTP — and because the
-	// application refuses REFRESH_TRANSPORT=cookie without CORS_ORIGINS at load, handing the task
-	// one without the other would stop it booting.
-	backendEnv := map[string]pulumi.StringInput{}
-	for name, value := range runtimeEnv {
-		backendEnv[name] = pulumi.String(value)
-	}
+	// What the backend service runs with: runtimeEnv plus the HTTP-facing settings and its own way
+	// into the database. Separate from runtimeEnv because the migration task shares that map, serves
+	// no HTTP, and connects differently — and because the application refuses
+	// REFRESH_TRANSPORT=cookie without CORS_ORIGINS at load, handing the task one without the other
+	// would stop it booting.
+	backendEnv := maps.Clone(runtimeEnv)
 	// A browser client is its own repository and its own stack (ADR-0022): `corsOrigins` is its
 	// `site_url`. Without it the deployed SPA makes its first request and the browser refuses the
 	// answer, which reads as "the API is down". Unset when empty, so the default is no CORS at all.
@@ -200,6 +187,15 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 	// across two default hostnames — they are two sites, and a SameSite=Strict cookie does not
 	// cross between them.
 	backendEnv["REFRESH_TRANSPORT"] = pulumi.String(cfg.RefreshTransport)
+
+	// The service logs in as databaseAppRole with a token its task role signs per connection: no
+	// password, no secret. AWS_REGION is the region the token is signed for.
+	backendEnv["DATABASE_AUTH"] = pulumi.String("rds-iam")
+	backendEnv["DATABASE_HOST"] = database.Address
+	backendEnv["DATABASE_PORT"] = pulumi.String(strconv.Itoa(components.PostgresPort))
+	backendEnv["DATABASE_NAME"] = pulumi.String(components.DBName)
+	backendEnv["DATABASE_USER"] = pulumi.String(cfg.DatabaseAppRole)
+	backendEnv["AWS_REGION"] = pulumi.String(cfg.Region)
 {%- endif %}
 
 	// Every task in this stack runs in the public subnets, as the app security group — see
@@ -207,9 +203,7 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 	subnets := network.PublicSubnetIDs
 	securityGroups := pulumi.StringArray{network.AppSecurityGroup.ID()}
 
-	// Depends on the secret VERSIONS, not just the secrets — a task that starts before the version
-	// exists cannot resolve it — and on the roles' grants, for the DRAINING race in Identities.
-	backendDeps := slices.Concat(secrets.Versions, identities.ServiceDependencies)
+	// Depends on the roles' grants, for the DRAINING race in Identities.
 	backend, err := components.NewService(ctx, cfg, components.ServiceArgs{
 		App:                   cfg.Slug,
 		Cluster:               cluster.Name,
@@ -227,7 +221,7 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 		LogGroup:       logs.Backend.Name,
 		Subnets:        subnets,
 		SecurityGroups: securityGroups,
-	}, with(opts, pulumi.DependsOn(backendDeps))...)
+	}, with(opts, pulumi.DependsOn(identities.ServiceDependencies))...)
 	if err != nil {
 		return nil, err
 	}
@@ -243,23 +237,44 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 	}
 {%- if cookiecutter.use_postgres == "yes" %}
 
-	// The same image as the service, a different command. The binary embeds its migrations, so
-	// the task needs the database and nothing else — no signing key, no Sentry DSN.
+	// The same image as the service, a different command, and a different way in. The binary
+	// embeds its migrations, so the task needs the database and nothing else — no signing key, no
+	// Sentry DSN, no task role — and it is the one thing that holds a database password.
+	//
+	// It logs in as the master user, from the secret RDS manages, over TLS: PGSSLMODE is libpq's
+	// own variable, which pgx reads beneath the DSN, so the client refuses plaintext as well as the
+	// server. Then, after the migrations, it creates databaseAppRole if it is missing and grants
+	// it row privileges.
+	migrateEnv := maps.Clone(runtimeEnv)
+	migrateEnv["DATABASE_AUTH"] = pulumi.String("password")
+	migrateEnv["DATABASE_HOST"] = database.Address
+	migrateEnv["DATABASE_PORT"] = pulumi.String(strconv.Itoa(components.PostgresPort))
+	migrateEnv["DATABASE_NAME"] = pulumi.String(components.DBName)
+	migrateEnv["PGSSLMODE"] = pulumi.String("require")
+	migrateEnv["DATABASE_APP_ROLE"] = pulumi.String(cfg.DatabaseAppRole)
+	migrateEnv["DATABASE_APP_AUTH"] = pulumi.String("rds-iam")
 	migrations, err := components.NewMigrations(ctx, cfg, components.MigrationsArgs{
-		ExecutionRoleARN: identities.Execution.Arn,
-		TaskRoleARN:      identities.Runtime.Arn,
+		ExecutionRoleARN: identities.MigrateExecution.Arn,
 		EntryPoint:       []string{"/app/api"},
 		Command:          []string{"migrate", "up"},
-		Env:              runtimeEnv,
-		SecretEnv:        map[string]string{"DATABASE_URL_OVERRIDE": "database-url"},
-		SecretRefs:       secrets.Refs,
-		LogGroup:         logs.Migrate.Name,
-	}, with(opts, pulumi.DependsOn(secrets.Versions))...)
+		Env:              migrateEnv,
+		SecretEnv: map[string]string{
+			"DATABASE_USER":     "master-username",
+			"DATABASE_PASSWORD": "master-password",
+		},
+		SecretRefs: map[string]components.SecretRef{
+			"master-username": components.RDSManagedKey(database.MasterSecretARN, "username"),
+			"master-password": components.RDSManagedKey(database.MasterSecretARN, "password"),
+		},
+		LogGroup: logs.Migrate.Name,
+	}, with(opts, pulumi.DependsOn(identities.MigrateDependencies))...)
 	if err != nil {
 		return nil, err
 	}
 	deployAccess.MigrateFamily = migrations.Family
 	deployAccess.MigrateLogGroupARN = logs.Migrate.Arn
+	// cd.yml registers a revision of the family, which passes its execution role again.
+	deployAccess.PassRoleARNs = append(deployAccess.PassRoleARNs, identities.MigrateExecution.Arn)
 {%- endif %}
 
 	if _, err := components.NewDeployAccess(ctx, cfg, deployAccess, opts...); err != nil {
@@ -291,6 +306,10 @@ func deploy(ctx *pulumi.Context, cfg stackconfig.StackConfig) (Exports, error) {
 		// instead of leaving it pointed at a resource that no longer exists.
 		"ecs_migrate_task_family": pulumi.String(""),
 		"rds_instance":            pulumi.String(""),
+		// "true" once every secret the service cannot start without has a pinned version.
+		// sync-github.sh refuses to un-gate CD until it is, because the image CD deploys would
+		// refuse to start. `just infra-secrets` is what makes it true.
+		"secrets_ready": pulumi.String(strconv.FormatBool(cfg.SecretsReady())),
 	}
 {%- if cookiecutter.use_postgres == "yes" %}
 	exports["ecs_migrate_task_family"] = migrations.Family

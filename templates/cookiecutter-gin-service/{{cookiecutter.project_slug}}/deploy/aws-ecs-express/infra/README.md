@@ -45,9 +45,24 @@ out of date.
    pulumi config set githubSubjectPrefix …         the OIDC subject GitHub issues for this repository
 5. just infra-preview                              read it, by a human
 6. just infra-up                                   creates the service on a placeholder image
-7. aws secretsmanager put-secret-value …           values a human supplies, never Pulumi
+{%- if cookiecutter.use_postgres == "yes" %}
+7. just infra-secrets                              generates the signing key the stack leaves empty
+8. just infra-up                                   again: mounts the version step 7 recorded
+{%- if cookiecutter.use_sentry == "yes" %}
+   (optional) aws secretsmanager put-secret-value  the Sentry DSN, which a human supplies
+{%- endif %}
+9. just infra-sync-github                          copies the stack's outputs into repository variables
+10. merge to main                                  cd.yml is no longer inert; the real image deploys
+{%- else %}
+{%- if cookiecutter.use_sentry == "yes" %}
+7. aws secretsmanager put-secret-value …           optional: the Sentry DSN, which a human supplies
 8. just infra-sync-github                          copies the stack's outputs into repository variables
 9. merge to main                                   cd.yml is no longer inert; the real image deploys
+{%- else %}
+7. just infra-sync-github                          copies the stack's outputs into repository variables
+8. merge to main                                   cd.yml is no longer inert; the real image deploys
+{%- endif %}
+{%- endif %}
 ```
 
 Step 3 is a script rather than a stack because a stack cannot create the bucket that holds its own
@@ -86,20 +101,36 @@ you; this command creates billable resources and a human reading the preview is 
 pipeline, or from an agent with no terminal, type it: `just infra-up dev --yes`. The stack name is
 positional, so the flag has to follow one.
 
-Step 7 is separate because secret *values* must never appear in infrastructure code, in a stack
-configuration file, or in state. The stack creates the empty secret and grants access to it; what
-goes inside is added out of band. Ask Athena for the Pulumi standards for the graded rule.
+Secret *values* never appear in infrastructure code, in a stack configuration file, or in state —
+not even a value the stack could have generated itself, because a generated value is in state like
+any other. Ask Athena for the Pulumi standards (MUST-3); ADR-0023 records how this stack meets it.
+The stack creates each Secrets Manager secret empty and mounts it only once its `VersionId` — which
+is not a secret — is in `Pulumi.<stack>.yaml`.
 {%- if cookiecutter.use_postgres == "yes" %}
-The database DSN and the token signing key are the exception: the stack generates both, nobody
-ever types them, and they have a version the moment step 6 finishes.
+
+Step 7 is the out-of-band half, and it is a script rather than a stack resource for exactly that
+reason. `just infra-secrets` (`scripts/secrets.sh`) generates the HS256 signing key — 64 random
+characters — pipes it into the `jwt-secret` secret, and records the `VersionId` as
+`jwtSecretVersion`. The key is never printed, written to a file or passed as a command-line
+argument. Run it again and it keeps what is recorded; `just infra-secrets dev --rotate` replaces it,
+and **rotating signs every user out**: every token was signed with the old key.
+
+The database needs nothing from step 7. The service logs in with an IAM token, and the migration
+task as the master user, whose password RDS itself generates, keeps and rotates — see
+[Two database identities](#two-database-identities).
+
+Step 8 is the same `up` again: it is the one that mounts the version step 7 recorded. Until then
+the stack exports `secrets_ready=false`, and step 9 refuses to un-gate CD — the image CD would
+deploy refuses to start without its signing key.
 {%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-The Sentry DSN is the value step 7 exists for, and it is optional: the secret stays empty and
-unmounted until you add a value and record the `VersionId` that `put-secret-value` prints as
-`sentryDsnVersion`, then run `just infra-up` again.
+
+The Sentry DSN is the one value a human adds, and it is optional: the secret stays empty and
+unmounted until you put a value — from stdin, `--secret-string file:///dev/stdin` — and record the
+`VersionId` that `put-secret-value` prints as `sentryDsnVersion`, then run `just infra-up` again.
 {%- endif %}
 
-Step 9 is last because the service exists before the image does. ECR is empty when the stack is
+Merging is last because the service exists before the image does. ECR is empty when the stack is
 first applied, so `pulumi up` creates the Express service on Google's public `hello` container — a
 few megabytes, anonymous pull, answers 200 on every path — Express Mode assigns it an HTTPS
 endpoint, and only then can a pipeline push a real image at it. That ordering matters more than it
@@ -117,6 +148,13 @@ exactly that; see [Browser clients](#browser-clients).
 3. nothing, 30 days on                    the KMS key finishes deleting on its own
 ```
 
+{% if cookiecutter.use_postgres == "yes" -%}
+`destroy` takes the `jwt-secret` secret with it, so a stack brought back up needs step 7 again. The
+database's master secret goes with the instance: RDS deletes the secret it manages when it deletes
+the instance. The final-snapshot and automated-backup behaviour is unchanged — none outside `prod`,
+a final snapshot in it.
+
+{% endif -%}
 **`pulumi destroy` does not undo step 3 of the setup order at the top of this page.** It removes
 what the stack created and nothing else, and the state bucket, the KMS key and the OIDC provider
 were created by `state-bucket.sh`, with the plain AWS CLI. Pulumi has never known about them, so no
@@ -164,10 +202,13 @@ is the cleanest teardown there is.
 
 ```
 infra/
-├── justfile                    test lint preview up sync-github destroy teardown lock
+├── justfile                    test lint preview up{% if cookiecutter.use_postgres == "yes" %} secrets{% endif %} sync-github destroy teardown lock
 ├── bootstrap/state-bucket.sh   plain aws CLI; the state bucket, its KMS key, the GitHub OIDC provider
 ├── bootstrap/teardown.sh       the inverse; removes what `pulumi destroy` cannot reach
-├── scripts/sync-github.sh      copies stack outputs into GitHub repository variables
+{%- if cookiecutter.use_postgres == "yes" %}
+├── scripts/secrets.sh          generates the signing key the stack leaves empty; records its version
+{%- endif %}
+├── scripts/sync-github.sh      copies stack outputs into GitHub repository variables; checks secrets_ready
 └── pulumi/
     ├── Pulumi.yaml             project, runtime, and the S3 backend URL
     ├── Pulumi.dev.yaml         per-stack configuration; a second environment is a sibling file
@@ -196,11 +237,11 @@ with a different string in it.
 | `registry` | one ECR repository, tags immutable, scanned on push, keeping the newest 30 images | pennies |
 | `logs` | the CloudWatch log groups every container writes to, 30 days' retention (90 in `prod`) | pennies |
 | `cluster` | the ECS cluster, Container Insights off outside `prod` | free |
-| `identities` | an ECS infrastructure role, an execution role, the application's runtime role, and two keyless GitHub roles — deploy and preview | free |
-| `secrets` | Secrets Manager secrets{% if cookiecutter.use_postgres == "yes" %}. Two of them — the database DSN and the token signing key — are generated here and have a version the moment the stack applies{% endif %} | a small monthly charge per secret |
+| `identities` | an ECS infrastructure role, an execution role{% if cookiecutter.use_postgres == "yes" %} for the service and one for the migration task{% endif %}, the application's runtime role{% if cookiecutter.use_postgres == "yes" %} with `rds-db:connect` as its own database user{% endif %}, and two keyless GitHub roles — deploy and preview | free |
+| `secrets` | empty Secrets Manager secrets, mounted at the `VersionId` recorded in stack configuration — never a value | a small monthly charge per secret |
 | `service` | one Express Mode service: the Fargate task, an HTTPS Application Load Balancer, its target group, a service security group and CPU-based scaling | **standing: one task and the load balancer** |
 {%- if cookiecutter.use_postgres == "yes" %}
-| `database` | RDS for PostgreSQL 16, `db.t4g.micro`, 20 GB gp3, single-AZ, 7 days of backups, TLS only | **standing** |
+| `database` | RDS for PostgreSQL 16, `db.t4g.micro`, 20 GB gp3, single-AZ, 7 days of backups, TLS only, IAM database authentication on, the master password managed by RDS | **standing**; RDS's master secret is a Secrets Manager charge too |
 | `migrations` | the ECS task definition CD runs `/app/api migrate up` with | free; billed per run |
 {%- endif %}
 | `deploy_access` | what the deploy role may touch, attached once the services exist | free |
@@ -248,15 +289,32 @@ without this file changing. Price them in the AWS Pricing Calculator for
 `{{ cookiecutter.aws_region }}` before you apply, then read the real number off your first bill.
 A figure copied into a README is wrong somewhere and out of date everywhere.
 
-The service reaches the database as a pgx DSN over TCP inside the VPC —
-`postgres://app:<generated>@<endpoint>:5432/app?sslmode=require` — mounted as
-`DATABASE_URL_OVERRIDE` from the `database-url` secret. The parameter group sets `rds.force_ssl`,
-so a plaintext connection is refused by the server; `require` rather than `verify-full` because
-the RDS certificate authority is not in the distroless image's trust store, and the path never
-leaves the VPC. The instance has no public endpoint, sits in isolated subnets with no route out,
-and its security group admits port 5432 from the app tasks' group and nothing else. The migration
-task runs the same image as `/app/api migrate up`, with that DSN and nothing else: no signing key,
-no Sentry DSN.
+### Two database identities
+
+| | Logs in as | With | May |
+| --- | --- | --- | --- |
+| **The service** | `databaseAppRole` (`app_iam` by default) | an IAM token its task role signs for every new connection — `DATABASE_AUTH=rds-iam`, `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `AWS_REGION`. No password exists. The runtime role holds `rds-db:connect` on exactly `arn:aws:rds-db:<region>:<account>:dbuser:<resource-id>/<databaseAppRole>` | read and write rows, use sequences — nothing that changes the schema |
+| **The migration task** | the master user, `app` | `DATABASE_USER` and `DATABASE_PASSWORD` from the master secret RDS manages (`manageMasterUserPassword`), resolved by ECS when the task starts | own and change the schema |
+
+`migrate up` creates `databaseAppRole` if it is missing, makes it a member of `rds_iam`, and grants
+it row privileges — **after** the migrations and on every run, so a table a migration just created
+is covered, with default privileges so the next one is too.
+
+The master secret is the one secret reference in this stack that does **not** pin a version
+(`<arn>:username::` and `<arn>:password::`), and that is deliberate (ADR-0023): its owner is RDS,
+which rotates it, and a pinned version would be a password the database no longer accepts after the
+first rotation. ECS resolves it when the task starts, so a rotation affects only the next migration.
+Only the migration task's own execution role may read it; the service's execution role cannot, and
+the migration task has no task role at all. No `kms:Decrypt` grant is needed: RDS encrypts the
+secret with the account's `aws/secretsmanager` key. Name a customer-managed key on the instance and
+the migration execution role needs `kms:Decrypt` on it too.
+
+Both connections are TLS. The parameter group sets `rds.force_ssl`, so a plaintext connection is
+refused by the server; the service connects with `sslmode=require`, and the migration task's
+`PGSSLMODE=require` makes the client refuse plaintext too. `require` rather than `verify-full`
+because the RDS certificate authority is not in the distroless image's trust store, and the path
+never leaves the VPC. The instance has no public endpoint, sits in isolated subnets with no route
+out, and its security group admits port 5432 from the app tasks' group and nothing else.
 {%- else -%}
 **No figure is quoted here on purpose.** The standing charge is the Fargate task, the load
 balancer and the public IPv4 addresses — each priced per region and changing without this file
@@ -272,7 +330,7 @@ its author.
 
 | | Where it is set | What it does | Value in the `dev` stack |
 | --- | --- | --- | --- |
-| **The stack's** | `{{ cookiecutter.project_slug }}:environment` in `Pulumi.dev.yaml` | Names resources, and nothing else. `{{ cookiecutter.project_slug }}-dev`, `{{ cookiecutter.project_slug }}-deploy-dev`{% if cookiecutter.use_postgres == "yes" %}, `{{ cookiecutter.project_slug }}-database-url-dev`{% endif %}. It is also what `IsProduction()` reads to decide{% if cookiecutter.use_postgres == "yes" %} deletion protection, the final snapshot,{% endif %} secret recovery windows, log retention and Container Insights. The application never sees it. | `dev` |
+| **The stack's** | `{{ cookiecutter.project_slug }}:environment` in `Pulumi.dev.yaml` | Names resources, and nothing else. `{{ cookiecutter.project_slug }}-dev`, `{{ cookiecutter.project_slug }}-deploy-dev`{% if cookiecutter.use_postgres == "yes" %}, `{{ cookiecutter.project_slug }}-jwt-secret-dev`{% endif %}. It is also what `IsProduction()` reads to decide{% if cookiecutter.use_postgres == "yes" %} deletion protection, the final snapshot,{% endif %} secret recovery windows, log retention and Container Insights. The application never sees it. | `dev` |
 | **The application's** | `{{ cookiecutter.project_slug }}:appEnvironment` in `Pulumi.dev.yaml` | Becomes `ENVIRONMENT` on the ECS task. One of `local`, `test`, `staging`, `production` — the values `backend/internal/config` accepts. It decides how the service *behaves*: `production` serves no `/docs` and no `/openapi.json`. | `staging` |
 
 They are separate because they vary separately. A stack called `dev` that the whole company can
@@ -339,8 +397,10 @@ anyway.
 
 ## Who owns what
 
-The stack owns the *shape* of the Express service — size, scaling, roles, network, secret wiring,
-logs, CORS. The CD pipeline owns exactly one field: the image. The image is declared with
+The stack owns the *shape* of the Express service — size, scaling, roles, network, secret wiring
+and the version each secret is pinned to, logs, CORS. The CD pipeline owns exactly one field: the
+image. Secret *values* belong to neither: {% if cookiecutter.use_postgres == "yes" %}`just infra-secrets`, a human, and for the database's master
+password RDS itself{% else %}a human{% endif %} put them in out of band, and the stack only records which version to mount. The image is declared with
 `ignoreChanges` on `primaryContainer.image`, and every preview and apply passes `--refresh`.
 
 Both halves are needed. `ignoreChanges` suppresses the diff between the program and Pulumi's
@@ -356,8 +416,9 @@ registers that as the next revision and runs it. So there is no `ignoreChanges` 
 to the stack is a new revision CD picks up on its next run.
 {%- endif %}
 
-Every secret reference pins a version: ECS resolves `<secret-arn>:::<version-id>`, never the
-`AWSCURRENT` stage implicitly. A task reads its secrets when it starts, so a stage-relative
+Every secret reference the stack owns pins a version: ECS resolves `<secret-arn>:::<version-id>`,
+never the `AWSCURRENT` stage implicitly{% if cookiecutter.use_postgres == "yes" %} — RDS's master secret is the one exception, and the database section
+says why{% endif %}. A task reads its secrets when it starts, so a stage-relative
 reference would let two tasks of one deployment hold different values after a rotation. Pinned, a
 new value is a new deployment, and a rollback restores the credential with the image.
 
@@ -379,7 +440,11 @@ Prepackaged — generated, wired together, and covered by a test:
 | --- | --- |
 | The network, the Express service, the registry, the roles, the secrets{% if cookiecutter.use_postgres == "yes" %}, the database, the migration task{% endif %} | `pulumi/main.go` |
 | The service's CORS allowlist{% if cookiecutter.use_postgres == "yes" %} and refresh-token transport{% endif %} for a browser client, checked before they deploy | `corsOrigins`{% if cookiecutter.use_postgres == "yes" %} and `refreshTransport`{% endif %} in `Pulumi.<stack>.yaml`, read by `pulumi/internal/stackconfig` |
-| Every repository variable the pipelines read | `scripts/sync-github.sh`, straight out of `pulumi stack output` |
+{%- if cookiecutter.use_postgres == "yes" %}
+| The signing key, generated, stored and its version recorded — never in a file, an argument or state | `scripts/secrets.sh`, via `just infra-secrets` |
+| The service's database identity and its grants | `rds-db:connect` in `pulumi/internal/components/identities.go`; the role and grants in `backend/internal/app/migrate.go`, on every `migrate up` |
+{%- endif %}
+| Every repository variable the pipelines read, and the refusal to set them before the secrets exist | `scripts/sync-github.sh`, straight out of `pulumi stack output` |
 | The state bucket, its KMS key and the GitHub OIDC provider | `bootstrap/state-bucket.sh` |
 | Removing them again, which `pulumi destroy` cannot | `bootstrap/teardown.sh`, via `just infra-teardown` |
 | Backend image build{% if cookiecutter.use_postgres == "yes" %}, migration{% endif %} and deploy | `.github/workflows/cd.yml` |
@@ -397,7 +462,12 @@ Manual, and no template can change that:
 | An AWS account per environment, with billing | It costs money and names a payer |
 | `./bootstrap/state-bucket.sh`, then `pulumi stack init` | A stack cannot create the bucket that holds its own state |
 | Reading `just infra-preview` before the first apply | The point of the step is that a human looked |
-| A value inside every empty Secrets Manager secret | A secret value must never exist in this repository |
+{%- if cookiecutter.use_postgres == "yes" %}
+| Running `just infra-secrets`, then `just infra-up` again | It writes to the cloud with your credentials, and a value is generated where it is used, never in this repository |
+{%- endif %}
+{%- if cookiecutter.use_sentry == "yes" %}
+| The Sentry DSN, in its secret | It comes from your Sentry account |
+{%- endif %}
 | Protection rules on the `production` GitHub environment | The deploy role trusts that environment; its rules are the gate on a deploy |
 | `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | They identify an account outside this project |
 | A custom domain, its DNS records and its certificate | You own the name; nothing here can |
@@ -415,9 +485,11 @@ Manual, and no template can change that:
 | Run the bootstrap script | you, once per account | `./infra/bootstrap/state-bucket.sh` |
 | `pulumi stack init` with the KMS secrets provider | you, once | the bootstrap script prints the command |
 | Read the preview before the first apply | you | `just infra-preview` |
-| Populate every empty Secrets Manager secret | you | `aws secretsmanager put-secret-value` |{% if cookiecutter.use_postgres == "yes" %}
-| Nothing, for `jwt-secret` or `database-url` | the stack | generated, versioned and mounted; never typed |{% endif %}{% if cookiecutter.use_sentry == "yes" %}
-| Record the Sentry DSN's VersionId | you | `sentryDsnVersion` in `Pulumi.<stack>.yaml`, then `just infra-up` |{% endif %}
+{%- if cookiecutter.use_postgres == "yes" %}
+| Generate the signing key and record its VersionId | you, once per stack; again with `--rotate` | `just infra-secrets`, then `just infra-up` |
+| Nothing, for the database's passwords | RDS, and IAM | the master password is RDS's; the service has none |
+{%- endif %}{% if cookiecutter.use_sentry == "yes" %}
+| Put the Sentry DSN and record its VersionId | you | `aws secretsmanager put-secret-value … --secret-string file:///dev/stdin`, `sentryDsnVersion` in `Pulumi.<stack>.yaml`, then `just infra-up` |{% endif %}
 | Set the repository variables | `sync-github.sh` | `just infra-sync-github` |
 | Protect the `production` environment | you | GitHub settings |
 | Set `SENTRY_ORG`, `SENTRY_PROJECT` and the `SENTRY_AUTH_TOKEN` secret | you | GitHub settings |
@@ -433,8 +505,8 @@ The two CI roles are not interchangeable. **Deploy** trusts a token from the `pr
 environment of `{{ cookiecutter.github_repository }}` and can push to this stack's repositories,
 roll this stack's services{% if cookiecutter.use_postgres == "yes" %}, run this stack's migration task{% endif %} and pass this stack's roles to ECS — nothing else.
 **Preview** trusts a token from a pull request in the same repository and can read the account
-(`ReadOnlyAccess`) and this project's state, write only this project's lock objects, and read only
-the secrets the stack itself generated, whose values are already in the state it can decrypt.
+(`ReadOnlyAccess`) and this project's state, write only this project's lock objects, and read no
+secret value at all — the stack writes none, so a refresh reads none.
 
 ## Adding a second environment, or a second service
 

@@ -32,6 +32,25 @@ read_output() {
   pulumi -C "${PULUMI_DIR}" stack output "$1" --stack "${STACK}" 2>/dev/null
 }
 
+# Setting WIF_PROVIDER un-gates CD, and CD deploys an image that refuses to start without the
+# secrets it reads. The stack mounts each one only once its version is in stack configuration, and
+# reports whether every one is as secrets_ready — so this stops here, before setting anything,
+# rather than turning the first merge into a revision that never becomes ready.
+READY="$(read_output secrets_ready || true)"
+if [[ "${READY}" != "true" ]]; then
+  cat >&2 <<EOF
+  NOT READY  secrets_ready is '${READY:-unset}' for stack '${STACK}': the service would deploy
+             without a secret it cannot start without.
+
+  Generate them, apply the stack so it mounts the pinned versions, then run this script again:
+
+    just infra-secrets ${STACK}
+    just infra-up ${STACK}
+EOF
+  exit 1
+fi
+echo "  ok    every required secret has a pinned version"
+
 # stack output -> repository variable. The right-hand column must match the `vars.` names in
 # .github/workflows/cd.yml exactly.
 # infra/pulumi/contract_test.go asserts that it does, because the failure otherwise is a deploy
@@ -94,8 +113,12 @@ Two things this script cannot do, because their values come from outside the sta
 
   * SENTRY_ORG and SENTRY_PROJECT, plus the SENTRY_AUTH_TOKEN repository *secret*, if you want a
     release marker on every deploy.
-  * The value inside any Secret Manager container the stack created empty. Add one with:
+  * The value of a secret that originates elsewhere, such as the Sentry DSN. Add it on stdin, so it
+    is in no file and no shell history:
 
       gcloud secrets versions add <secret-id> --data-file=- --project=$(read_output gcp_project)
+
+    then put the version number it prints into infra/pulumi/Pulumi.${STACK}.yaml and run
+    \`just infra-up ${STACK}\`.
 
 EOF

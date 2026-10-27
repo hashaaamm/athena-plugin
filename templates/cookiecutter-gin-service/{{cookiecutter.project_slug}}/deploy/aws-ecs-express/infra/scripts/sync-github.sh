@@ -7,8 +7,8 @@
 # is a public identifier: an account id, a region, a role ARN, a repository URL, a subnet id. None
 # of them grants anything alone.
 #
-# The only credentials in this system live in Secrets Manager, are read by the execution role, and
-# never reach GitHub.
+# The only credentials in this system live in Secrets Manager, are read by the ECS execution roles,
+# and never reach GitHub.
 #
 # Run after `pulumi up`, from anywhere:
 #
@@ -53,6 +53,25 @@ EOF
   exit 1
 fi
 echo "  ok    CI roles trust ${TRUSTED_PREFIX:-${EXPECTED_PREFIX}}:…"
+
+# Setting AWS_DEPLOY_ROLE_ARN un-gates CD, and CD deploys an image that refuses to start without
+# the secrets it reads. The stack mounts each one only once its VersionId is in stack
+# configuration, and reports whether every one is as secrets_ready — so this stops here, before
+# setting anything, rather than turning the first merge into a deployment that rolls back.
+READY="$(read_output secrets_ready || true)"
+if [[ "${READY}" != "true" ]]; then
+  cat >&2 <<EOF
+  NOT READY  secrets_ready is '${READY:-unset}' for stack '${STACK}': the service would deploy
+             without a secret it cannot start without.
+
+  Generate them, apply the stack so it mounts the pinned versions, then run this script again:
+
+    just infra-secrets ${STACK}
+    just infra-up ${STACK}
+EOF
+  exit 1
+fi
+echo "  ok    every required secret has a pinned version"
 
 # stack output -> repository variable. The right-hand column must match the `vars.` names in
 # .github/workflows/cd.yml and infra.yml exactly. infra/pulumi/contract_test.go asserts that it
@@ -123,10 +142,12 @@ Two things this script cannot do, because their values come from outside the sta
 
   * SENTRY_ORG and SENTRY_PROJECT, plus the SENTRY_AUTH_TOKEN repository *secret*, if you want a
     release marker on every deploy.
-  * The value inside any Secrets Manager secret the stack created empty. Add one with:
+  * The value of a secret that originates elsewhere, such as the Sentry DSN. Put it from stdin,
+    so it is in no file and no shell history:
 
       aws secretsmanager put-secret-value --region $(read_output aws_region) \\
-        --secret-id <secret-name> --secret-string '<value>'
+        --secret-id <secret-name> --secret-string file:///dev/stdin \\
+        --query VersionId --output text
 
     then put the VersionId it prints into infra/pulumi/Pulumi.${STACK}.yaml (for the Sentry DSN,
     sentryDsnVersion) and run \`just infra-up ${STACK}\`. The service pins that version, so a new

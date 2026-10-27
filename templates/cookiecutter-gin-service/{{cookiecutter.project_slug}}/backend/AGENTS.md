@@ -123,7 +123,15 @@ tables at all. The first resource you add is what makes the rest of it real.
 7. Every SQL change is a new goose migration (`just db-new`), never an edit to one that has run
    anywhere. Name every constraint and index explicitly, and keep it backward-compatible with the
    code already deployed: the migrate job runs before the new revision takes traffic.
-8. `<<Add the rules that are specific to this domain. They are the highest-value lines in this
+8. `DATABASE_AUTH` says how a process reaches Postgres: `password` (the default — local, tests, CI,
+   and the deployed migrate job), `rds-iam` or `cloud-sql-iam` (the deployed service, which holds
+   no database password). The pool is built in one place, `internal/app/database.go`; an IAM mode
+   sets the password per connection or dials through the Cloud SQL connector, and nothing else in
+   the code knows which. The service's role has row privileges only, granted by `migrate up` after
+   every run — a migration may create tables, and the grants follow it by default privileges, but
+   a migration that needs the service to do something new (a `TRUNCATE`, a function) needs the
+   grant in `internal/app/migrate.go`'s `appGrants` too.
+9. `<<Add the rules that are specific to this domain. They are the highest-value lines in this
    file — "all money is an integer number of cents", "every query filters by tenant_id".>>`
 {%- else -%}
 1. No `os.Getenv` outside `internal/config`. Add a field to `config.Config`, with its default, its

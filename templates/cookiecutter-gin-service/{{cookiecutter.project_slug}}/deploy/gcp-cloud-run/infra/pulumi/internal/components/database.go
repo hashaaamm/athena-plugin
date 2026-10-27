@@ -1,16 +1,38 @@
 package components
 
 import (
+	"strings"
+
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/sql"
-	"github.com/pulumi/pulumi-random/sdk/v4/go/random"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"{{ cookiecutter.go_module }}/infra/pulumi/internal/stackconfig"
 )
 
-// DBName is the logical database and the role that owns it. One name, used in both places and in
-// the DSN.
-const DBName = "app"
+const (
+	// DBName is the logical database. The service and the migration job both name it.
+	DBName = "app"
+
+	// AdminUser is the login the migration job connects as: Cloud SQL's built-in `postgres` user,
+	// which owns the schema. The stack never sets or sees its password — `just infra-secrets`
+	// does, out of band, and stores it in the db-admin-password container.
+	AdminUser = "postgres"
+
+	// IAMAuthenticationFlag turns on IAM database authentication on the instance. Without it a
+	// CLOUD_IAM_SERVICE_ACCOUNT user exists and cannot log in.
+	IAMAuthenticationFlag = "cloudsql.iam_authentication"
+
+	// serviceAccountSuffix is what Cloud SQL drops from a service account's email to make its IAM
+	// database user name: `name@project.iam.gserviceaccount.com` logs in as `name@project.iam`.
+	serviceAccountSuffix = ".gserviceaccount.com"
+)
+
+// DatabaseArgs is what Database needs beyond the configuration.
+type DatabaseArgs struct {
+	// AppServiceAccount is the email of the account the service runs as. It becomes the service's
+	// database identity: an IAM database user, with no password anywhere.
+	AppServiceAccount pulumi.StringInput
+}
 
 // Database is Cloud SQL for PostgreSQL.
 //
@@ -20,31 +42,39 @@ const DBName = "app"
 // has the table of what each one is and what the floor costs you — shared-core and single-zone are
 // both outside the Cloud SQL SLA, which is the price of it.
 //
-// The security decision worth understanding: the instance keeps a public IP with ZERO authorised
-// networks. That reads as a mistake and is not. Cloud Run reaches it through the Cloud SQL
-// connector, which authenticates with IAM over a Unix socket and does not traverse the public
-// internet; with no authorised networks there is no route for anything else, so the address is
-// unreachable rather than merely unguarded. The alternative — private IP — needs a VPC connector
-// or Direct VPC egress, which costs more per month than the database.
+// The security decisions worth understanding:
+//
+//   - The instance keeps a public IP with ZERO authorised networks and connector enforcement
+//     REQUIRED. That reads as a mistake and is not. Every client goes through a Cloud SQL connector
+//     — the service through the Go connector in-process, the migration job through Cloud Run's Cloud
+//     SQL connection — which authenticates with IAM and does not traverse the public internet; with
+//     no authorised networks and connectors required there is no route for anything else, so the
+//     address is unreachable rather than merely unguarded. The alternative — private IP — needs a
+//     VPC connector or Direct VPC egress, which costs more per month than the database. Ask Athena
+//     for the GCP infrastructure standards: a public-IP instance has zero authorised networks and
+//     connector enforcement REQUIRED.
+//   - Two database identities. The service logs in as its own service account, an IAM database
+//     user with no password, holding row privileges only. The migration job logs in as AdminUser,
+//     which owns the schema; its password never passes through this program. Pulumi standards
+//     MUST-3, and ADR-0023.
 type Database struct {
 	pulumi.ResourceState
 
 	Instance *sql.DatabaseInstance
-	Password *random.RandomPassword
-	User     *sql.User
+	AppUser  *sql.User
 	Database *sql.Database
 
-	// DatabaseURL is the pgx DSN the service reads as DATABASE_URL_OVERRIDE.
-	// `?host=/cloudsql/<connection>` is the Unix socket the Cloud Run connector mounts — there is
-	// no hostname to resolve and no port to open. A secret output: it carries the password.
-	DatabaseURL pulumi.StringOutput
-
-	// ConnectionName is `project:region:instance`, what Cloud Run's Cloud SQL volume names.
+	// ConnectionName is `project:region:instance`: CLOUD_SQL_INSTANCE for the service's connector,
+	// and the instance Cloud Run's Cloud SQL volume names for the migration job.
 	ConnectionName pulumi.StringOutput
+
+	// AppUserName is the service's database user, `<account>@<project>.iam` — DATABASE_USER for
+	// the service, and the role the migration job grants to.
+	AppUserName pulumi.StringOutput
 }
 
-// NewDatabase creates the instance, a generated password, the role and the database.
-func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, opts ...pulumi.ResourceOption) (*Database, error) {
+// NewDatabase creates the instance, the service's IAM database user and the database.
+func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, args DatabaseArgs, opts ...pulumi.ResourceOption) (*Database, error) {
 	c := &Database{}
 	if err := ctx.RegisterComponentResource("service:infra:Database", cfg.Name("database"), c, opts...); err != nil {
 		return nil, err
@@ -72,6 +102,15 @@ func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, opts ...pulum
 				AuthorizedNetworks: sql.DatabaseInstanceSettingsIpConfigurationAuthorizedNetworkArray{},
 				SslMode:            pulumi.String("ENCRYPTED_ONLY"),
 			},
+			// Every connection through a connector, so every connection is authenticated by IAM
+			// before Postgres sees it. See the type's documentation.
+			ConnectorEnforcement: pulumi.String("REQUIRED"),
+			DatabaseFlags: sql.DatabaseInstanceSettingsDatabaseFlagArray{
+				&sql.DatabaseInstanceSettingsDatabaseFlagArgs{
+					Name:  pulumi.String(IAMAuthenticationFlag),
+					Value: pulumi.String("on"),
+				},
+			},
 			BackupConfiguration: &sql.DatabaseInstanceSettingsBackupConfigurationArgs{
 				Enabled:                    pulumi.Bool(true),
 				StartTime:                  pulumi.String("03:00"),
@@ -94,49 +133,45 @@ func NewDatabase(ctx *pulumi.Context, cfg stackconfig.StackConfig, opts ...pulum
 		return nil, err
 	}
 
-	// Generated, never chosen. A password a human typed is a password a human can reuse, and this
-	// one only ever travels from Secret Manager into the runtime environment.
-	c.Password, err = random.NewRandomPassword(ctx, "db-password", &random.RandomPasswordArgs{
-		Length:  pulumi.Int(32),
-		Special: pulumi.Bool(true),
-		// Keep it URL-safe: this value ends up inside a DSN.
-		OverrideSpecial: pulumi.String("-_.~"),
-	}, child(c, opts)...)
-	if err != nil {
-		return nil, err
-	}
-
-	c.User, err = sql.NewUser(ctx, "db-user", &sql.UserArgs{
+	// The service's identity in Postgres. A CLOUD_IAM_SERVICE_ACCOUNT user has no password field at
+	// all, so there is nothing secret in state; Cloud SQL accepts the account's own credential. It
+	// starts with no privileges: the migration job grants them, after every run of the migrations.
+	c.AppUserName = args.AppServiceAccount.ToStringOutput().ApplyT(IAMDatabaseUser).(pulumi.StringOutput)
+	c.AppUser, err = sql.NewUser(ctx, "app-user", &sql.UserArgs{
 		Project:  pulumi.String(cfg.Project),
 		Instance: c.Instance.Name,
-		Name:     pulumi.String(DBName),
-		Password: c.Password.Result,
-	}, child(c, opts, pulumi.AdditionalSecretOutputs([]string{"password"}))...)
+		Name:     c.AppUserName,
+		Type:     pulumi.String("CLOUD_IAM_SERVICE_ACCOUNT"),
+	}, child(c, opts)...)
 	if err != nil {
 		return nil, err
 	}
 
 	// The DependsOn is load-bearing and it is here for the DESTROY, which runs this graph
 	// backwards: a dependent is deleted before the thing it depends on, so the database goes first
-	// and the role second. Without the edge Pulumi has no ordering between them and deletes both at
-	// once. Cloud SQL then runs `DROP ROLE "app"` while the database `app` is still there holding
-	// the tables goose created, Postgres refuses with `role "app" cannot be dropped because some
-	// objects depend on it`, and the destroy fails with the instance and the role still standing.
-	// Sharing an instance and a name is not a dependency Pulumi can infer — `Instance:` ties both of
-	// these to the instance, not to each other.
+	// and the IAM user second. Without the edge Pulumi has no ordering between them and deletes both
+	// at once. Cloud SQL then drops the user's role while the database still holds the grants the
+	// migration job gave it, Postgres refuses with `role ... cannot be dropped because some objects
+	// depend on it`, and the destroy fails with the instance and the role still standing. Sharing an
+	// instance is not a dependency Pulumi can infer — `Instance:` ties both of these to the
+	// instance, not to each other.
 	c.Database, err = sql.NewDatabase(ctx, "database", &sql.DatabaseArgs{
 		Project:  pulumi.String(cfg.Project),
 		Instance: c.Instance.Name,
 		Name:     pulumi.String(DBName),
-	}, child(c, opts, pulumi.DependsOn([]pulumi.Resource{c.User}))...)
+	}, child(c, opts, pulumi.DependsOn([]pulumi.Resource{c.AppUser}))...)
 	if err != nil {
 		return nil, err
 	}
 
 	c.ConnectionName = c.Instance.ConnectionName
-	c.DatabaseURL = pulumi.ToSecret(pulumi.Sprintf(
-		"postgres://%s:%s@/%s?host=/cloudsql/%s", DBName, c.Password.Result, DBName, c.ConnectionName,
-	)).(pulumi.StringOutput)
+	return c, ctx.RegisterResourceOutputs(c, pulumi.Map{
+		"connectionName": c.ConnectionName,
+		"appUser":        c.AppUserName,
+	})
+}
 
-	return c, ctx.RegisterResourceOutputs(c, pulumi.Map{"connectionName": c.ConnectionName})
+// IAMDatabaseUser is the Cloud SQL IAM database user name for a service account's email.
+func IAMDatabaseUser(email string) string {
+	return strings.TrimSuffix(email, serviceAccountSuffix)
 }

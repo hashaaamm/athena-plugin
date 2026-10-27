@@ -8,6 +8,15 @@ module {{ cookiecutter.go_module }}
 go {{ cookiecutter.go_version }}
 
 require (
+{%- if cookiecutter.use_postgres == "yes" %}
+	// DATABASE_AUTH=cloud-sql-iam: the Cloud SQL Go connector, which carries the service account's
+	// identity to the instance, so the deployed service holds no database password.
+	cloud.google.com/go/cloudsqlconn v1.25.4
+	// DATABASE_AUTH=rds-iam: the credential chain and the token signer, and nothing else of the SDK.
+	github.com/aws/aws-sdk-go-v2 v1.47.4
+	github.com/aws/aws-sdk-go-v2/config v1.33.11
+	github.com/aws/aws-sdk-go-v2/feature/rds/auth v1.7.7
+{%- endif %}
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/getkin/kin-openapi v0.152.0
 {%- if cookiecutter.use_sentry == "yes" %}

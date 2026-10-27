@@ -1,18 +1,30 @@
 package components
 
 import (
+	"fmt"
+
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/secretmanager"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"{{ cookiecutter.go_module }}/infra/pulumi/internal/stackconfig"
 )
 
-// ManualSecrets are containers created empty, for values that originate outside this stack. A
-// human populates them; nothing mounts them until they have a version.
+// SecretNames is every Secret Manager container the stack creates, each of them empty.
+{%- if cookiecutter.use_postgres == "yes" or cookiecutter.use_sentry == "yes" %}
+var SecretNames = []string{
+{%- if cookiecutter.use_postgres == "yes" %}
+	// The `postgres` login's password, which only the migration job reads. `just infra-secrets`.
+	"db-admin-password",
+	// The HS256 key the service signs access tokens with. `just infra-secrets`.
+	"jwt-secret",
+{%- endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
-var ManualSecrets = []string{"sentry-dsn"}
+	// Sentry's project DSN, which originates in Sentry. `gcloud secrets versions add` by hand.
+	"sentry-dsn",
+{%- endif %}
+}
 {%- else %}
-var ManualSecrets = []string{}
+var SecretNames = []string{}
 {%- endif %}
 
 // SecretRef is what a service needs to mount a secret: the container and the exact version to read.
@@ -23,35 +35,26 @@ type SecretRef struct {
 
 // SecretsArgs is what Secrets needs beyond the configuration.
 type SecretsArgs struct {
-	// AccessorEmail is the one account granted secretAccessor on every container here.
-	AccessorEmail pulumi.StringInput
+	// Readers maps every name in SecretNames to the one account granted secretAccessor on it. One
+	// reader per secret: the migration job's account reads the database admin password and nothing
+	// else, the service's account reads everything but it.
+	Readers map[string]pulumi.StringInput
 
-	// Generated maps a logical name to a value this stack mints and no human ever reads. Each gets
-	// its container and its first version.
-	Generated map[string]pulumi.StringInput
-
-	// ManualVersions maps a name in ManualSecrets to the version a human added. An empty or absent
-	// entry means "not populated yet", and the secret gets no reference.
-	ManualVersions map[string]string
+	// Versions maps a name in SecretNames to the version number its value was added as. An empty
+	// or absent entry means "not populated yet", and the secret gets no reference.
+	Versions map[string]string
 }
 
 // Secrets is the stack's Secret Manager containers.
 //
 // The house rule is that secret VALUES never live in infrastructure code, in a stack configuration
-// file, or in state — ask Athena for the Pulumi standards. What that protects against is a
-// credential a human chose, typed somewhere, and can leak. It is not a prohibition on the stack
-// generating a credential nothing else ever needs to know.
-//
-// So there are two kinds of secret here, and they behave differently:
-//
-//   - Generated. Values this stack mints and no human ever reads — with a database, the DSN and
-//     the token signing key. They are encrypted in state with the KMS key the bootstrap script
-//     created, and they have a version the moment the stack applies, which the service pins by
-//     number.
-//   - Manual. Anything that genuinely originates outside — a Sentry DSN, a third-party API key.
-//     The stack creates the empty container and grants access to it; a human adds the value with
-//     `gcloud secrets versions add` and puts the version number it prints into stack
-//     configuration. Until then the secret has no reference, so nothing can mount it.
+// file, or in state — ask Athena for the Pulumi standards (MUST-3), and see ADR-0023 for how this
+// stack meets it. So this component creates containers and access grants and never a version: a
+// value is added out of band — by `just infra-secrets` for the ones this repository can generate,
+// by a human for the ones that originate somewhere else — and its version NUMBER, which is not a
+// secret, goes into stack configuration. Until then a secret has no reference, so nothing can
+// mount it, and a mounted empty container is an error at plan time rather than a revision that
+// cannot start.
 //
 // Every reference pins a version number, never "latest". Cloud Run reads an environment secret
 // when an instance STARTS, so with "latest" a rotation leaves the instances of one revision
@@ -63,23 +66,23 @@ type Secrets struct {
 	// IDs maps a logical name to its Secret Manager secret id.
 	IDs map[string]pulumi.StringOutput
 
-	// Versions is every version this component creates. Anything that mounts a secret must depend
-	// on these, not merely on the containers — the container is not the dependency, the value is.
-	// A service that waits only for the container races the version into existence and fails with
-	// "version was not found".
-	Versions []pulumi.Resource
-
-	// Refs maps a logical name to a pinned reference, for every secret that has a version to pin.
-	// A manual secret appears here only once its version number is in stack configuration, so
-	// mounting an empty container is an error at plan time rather than a revision that cannot
-	// start.
+	// Refs maps a logical name to a pinned reference, for every secret whose version number is in
+	// stack configuration.
 	Refs map[string]SecretRef
 }
 
-// NewSecrets creates every container, the generated versions, and the per-secret access grants.
+// NewSecrets creates every container and its one access grant.
 func NewSecrets(
 	ctx *pulumi.Context, cfg stackconfig.StackConfig, args SecretsArgs, opts ...pulumi.ResourceOption,
 ) (*Secrets, error) {
+	// Fail here rather than mid-apply: a container nobody may read is a secret that silently
+	// cannot be mounted.
+	for _, name := range SecretNames {
+		if args.Readers[name] == nil {
+			return nil, fmt.Errorf("secret %q has no reader", name)
+		}
+	}
+
 	c := &Secrets{
 		IDs:  map[string]pulumi.StringOutput{},
 		Refs: map[string]SecretRef{},
@@ -88,63 +91,32 @@ func NewSecrets(
 		return nil, err
 	}
 
-	member := pulumi.Sprintf("serviceAccount:%s", args.AccessorEmail)
-
-	// Sorted, so two runs register resources in the same order and a preview reads the same way
-	// twice.
-	for _, name := range sortedKeys(args.Generated) {
-		secret, err := c.container(ctx, cfg, opts, name, member)
+	for _, name := range SecretNames {
+		secret, err := secretmanager.NewSecret(ctx, name, &secretmanager.SecretArgs{
+			Project:  pulumi.String(cfg.Project),
+			SecretId: pulumi.String(cfg.Name(cfg.Slug, name)),
+			Replication: &secretmanager.SecretReplicationArgs{
+				Auto: &secretmanager.SecretReplicationAutoArgs{},
+			},
+		}, child(c, opts)...)
 		if err != nil {
 			return nil, err
 		}
-		version, err := secretmanager.NewSecretVersion(ctx, name+"-version", &secretmanager.SecretVersionArgs{
-			Secret:     secret.ID(),
-			SecretData: pulumi.ToSecret(args.Generated[name]).(pulumi.StringOutput),
-		}, child(c, opts, pulumi.AdditionalSecretOutputs([]string{"secretData"}))...)
-		if err != nil {
+		// Access is granted per secret, not project-wide, so a secret added later is not
+		// automatically readable by everything that can already read this one.
+		if _, err := secretmanager.NewSecretIamMember(ctx, name+"-accessor", &secretmanager.SecretIamMemberArgs{
+			Project:  pulumi.String(cfg.Project),
+			SecretId: secret.SecretId,
+			Role:     pulumi.String("roles/secretmanager.secretAccessor"),
+			Member:   pulumi.Sprintf("serviceAccount:%s", args.Readers[name]),
+		}, child(c, opts)...); err != nil {
 			return nil, err
 		}
-		c.Versions = append(c.Versions, version)
-		// The version's own number, so a new value is a new revision rather than a silent change.
-		c.Refs[name] = SecretRef{Secret: secret.SecretId, Version: version.Version}
-	}
-
-	for _, name := range ManualSecrets {
-		secret, err := c.container(ctx, cfg, opts, name, member)
-		if err != nil {
-			return nil, err
-		}
-		if version := args.ManualVersions[name]; version != "" {
+		c.IDs[name] = secret.SecretId
+		if version := args.Versions[name]; version != "" {
 			c.Refs[name] = SecretRef{Secret: secret.SecretId, Version: pulumi.String(version)}
 		}
 	}
 
 	return c, ctx.RegisterResourceOutputs(c, pulumi.Map{})
-}
-
-func (c *Secrets) container(
-	ctx *pulumi.Context, cfg stackconfig.StackConfig, opts []pulumi.ResourceOption, name string, member pulumi.StringInput,
-) (*secretmanager.Secret, error) {
-	secret, err := secretmanager.NewSecret(ctx, name, &secretmanager.SecretArgs{
-		Project:  pulumi.String(cfg.Project),
-		SecretId: pulumi.String(cfg.Name(cfg.Slug, name)),
-		Replication: &secretmanager.SecretReplicationArgs{
-			Auto: &secretmanager.SecretReplicationAutoArgs{},
-		},
-	}, child(c, opts)...)
-	if err != nil {
-		return nil, err
-	}
-	// Access is granted per secret, not project-wide, so a secret added later is not automatically
-	// readable by everything that can already read this one.
-	if _, err := secretmanager.NewSecretIamMember(ctx, name+"-accessor", &secretmanager.SecretIamMemberArgs{
-		Project:  pulumi.String(cfg.Project),
-		SecretId: secret.SecretId,
-		Role:     pulumi.String("roles/secretmanager.secretAccessor"),
-		Member:   member,
-	}, child(c, opts)...); err != nil {
-		return nil, err
-	}
-	c.IDs[name] = secret.SecretId
-	return secret, nil
 }
