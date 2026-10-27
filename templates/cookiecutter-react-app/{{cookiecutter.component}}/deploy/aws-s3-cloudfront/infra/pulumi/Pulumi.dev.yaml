@@ -1,0 +1,39 @@
+# The dev stack.
+#
+# `pulumi stack init dev --secrets-provider="awskms://alias/pulumi-state?region=..."` records
+# `secretsprovider` and `encryptedkey` in this file alongside the configuration below. The
+# bootstrap script prints the exact command. Every key below is read in one place: src/config.ts.
+config:
+  # The provider refuses credentials for any other account — the wrong-account guard. Set it to
+  # the account this stack deploys into; one account per environment is the recommendation, so a
+  # `prod` stack names a different number.
+  {{ cookiecutter.__name }}:accountId: "{{ cookiecutter.aws_account_id }}"
+  {{ cookiecutter.__name }}:region: {{ cookiecutter.aws_region }}
+  # The STACK's environment. It names resources — `{{ cookiecutter.__name }}-site-dev-…`, and
+  # both CI roles — and decides whether the bucket may be deleted with objects still in it.
+  {{ cookiecutter.__name }}:environment: dev
+  # Every resource name is built from this — the project's slug and this component's name — so it
+  # is not decoration: changing it renames the bucket, which is a replacement, and the roles.
+  {{ cookiecutter.__name }}:slug: {{ cookiecutter.__name }}
+  # The CI roles trust tokens from exactly this repository. Anything else here means some other
+  # repository can deploy.
+  {{ cookiecutter.__name }}:githubRepository: {{ cookiecutter.github_repository }}
+  # The start of the `sub` claim GitHub issues for that repository. Empty means the name-only form,
+  # repo:{{ cookiecutter.github_repository }}. Many repositories now get the immutable form with
+  # numeric ids instead, and a trust policy for the wrong form admits no token at all. Ask GitHub:
+  #   gh api repos/{{ cookiecutter.github_repository }}/actions/oidc/customization/sub --jq .sub_claim_prefix
+  # and set what it prints with `pulumi config set --plaintext githubSubjectPrefix '<it>'`.
+  # sync-github.sh checks the two agree before it un-gates CD.
+  {{ cookiecutter.__name }}:githubSubjectPrefix: ""
+  # The backend's own address — https://<its host>, no trailing slash: its stack's service_url. Set it
+  # with
+  #   pulumi config set --plaintext apiUrl https://<the backend's host>
+  # and run `just infra-up`. `just infra-first-deploy` refuses to build without it.
+  {{ cookiecutter.__name }}:apiUrl: ""
+  # Whether this site serves that API on its own origin, under /api/* and /health/*. `true`: the
+  # distribution forwards those paths to apiUrl, and the bundle calls the page's own origin, so the
+  # app and the API are one site{% if cookiecutter.include_auth == "yes" %} and the backend's SameSite=Strict refresh cookie survives a reload{% endif %}.
+  # `false`: the bundle calls apiUrl directly — for a site and an API on one domain you own. Either
+  # way the stack exports what the bundle is built with as api_url, and `just infra-sync-github`
+  # copies it into {{ cookiecutter.__component_var }}_API_URL.
+  {{ cookiecutter.__name }}:apiSameOrigin: "true"

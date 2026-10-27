@@ -1,9 +1,12 @@
 {
   "project_name": "Example Service",
   "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '-').replace('_', '-') }}",
+  "component": "api",
+  "__component_var": "{{ cookiecutter.component.upper().replace('-', '_') }}",
+  "__name": "{{ cookiecutter.project_slug }}-{{ cookiecutter.component }}",
   "description": "A Gin service built to the Engineering Athena handbook.",
   "author": "Your Name",
-  "go_module": "github.com/your-org/{{ cookiecutter.project_slug }}",
+  "go_module": "github.com/your-org/{{ cookiecutter.project_slug }}/{{ cookiecutter.component }}",
   "go_version": "1.27",
   "deploy_target": ["gcp-cloud-run", "aws-ecs-express"],
   "gcp_project_id": "your-gcp-project",
@@ -18,6 +21,7 @@
     "deploy/*/workflows/*"
   ],
   "__prompts__": {
+    "component": "Component name: the folder it is generated into, and the prefix of everything it creates",
     "deploy_target": {
       "__prompt__": "Where it deploys",
       "gcp-cloud-run": "GCP: Cloud Run + Cloud SQL",

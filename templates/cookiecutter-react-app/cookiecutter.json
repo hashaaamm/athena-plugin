@@ -1,6 +1,9 @@
 {
   "project_name": "Example App",
   "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '-').replace('_', '-') }}",
+  "component": "web",
+  "__component_var": "{{ cookiecutter.component.upper().replace('-', '_') }}",
+  "__name": "{{ cookiecutter.project_slug }}-{{ cookiecutter.component }}",
   "description": "A React single-page application built to the Engineering Athena handbook.",
   "author": "Your Name",
   "deploy_target": ["gcp-cloud-run", "aws-s3-cloudfront"],
@@ -16,6 +19,7 @@
     "deploy/*/workflows/*"
   ],
   "__prompts__": {
+    "component": "Component name: the folder in the repository, and the prefix of its workflows and repository variables",
     "deploy_target": {
       "__prompt__": "Where it deploys",
       "gcp-cloud-run": "GCP: Cloud Run serving the nginx image",

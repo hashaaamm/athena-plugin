@@ -1,0 +1,163 @@
+# Infrastructure CI.
+#
+# The stack tests run on every pull request and need no cloud credentials — that is most of the
+# argument for Pulumi over HCL, so it is the cheapest and most-run job here. The preview needs
+# cloud access and is gated on the stack having been applied at least once; its diff is posted to
+# the pull request, because a preview nobody reads is not a review.
+#
+# The apply runs when the change merges to main, as the stack's apply account, in the
+# `infrastructure` environment. Setting an environment up — the bootstrap, the first `pulumi up`,
+# its secrets and the first deploy — runs once from an operator's machine, because the apply
+# account is one of the things that first apply creates. Every apply after it runs here (Pulumi
+# standards MUST-9); one from a laptop is the exception that rule forbids.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. The post-generation hook substitutes two tokens instead — the
+# component's folder name, and the same name upper-cased as a variable prefix — and writes the
+# result to the repository root as .github/workflows/__COMPONENT__-infra.yml. Nothing else here may be
+# project-specific; anything that is comes from a repository variable instead.
+name: __COMPONENT__ Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - '__COMPONENT__/infra/**'
+      - '.github/workflows/__COMPONENT__-infra.yml'
+      # contract_test.go reads the component's workflows, so changing one re-checks the names.
+      - '.github/workflows/__COMPONENT__-cd.yml'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/infra/**'
+      - '.github/workflows/__COMPONENT__-infra.yml'
+      - '.github/workflows/__COMPONENT__-cd.yml'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+
+# A pull request's checks cancel in progress, because only its latest commit matters. A push to
+# main queues instead: cancelling it could stop the apply halfway through `pulumi up`, leaving
+# resources half-changed and the stack locked.
+concurrency:
+  group: __COMPONENT__-infra-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  id-token: write        # required for Workload Identity Federation
+  pull-requests: write   # the preview comments its diff
+
+# The component's folder, narrowed to the Pulumi program below. Every job checks out first: a run
+# step's working directory does not exist until the repository is on disk.
+defaults:
+  run:
+    working-directory: __COMPONENT__
+
+jobs:
+  static:
+    name: Vet, lint and stack tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: __COMPONENT__/infra/pulumi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: __COMPONENT__/infra/pulumi/go.mod
+          cache-dependency-path: __COMPONENT__/infra/pulumi/go.sum
+      # Fails loudly on a go.mod or go.sum that `just lock` would change — the Go equivalent of
+      # installing with a frozen lockfile. A missing go.sum fails here too: run `just lock` in
+      # infra/ and commit it.
+      - run: go mod tidy -diff
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          working-directory: __COMPONENT__/infra/pulumi
+      - run: go test ./...
+
+  preview:
+    name: Preview
+    runs-on: ubuntu-latest
+    needs: [static]
+    # Inert until the stack has been applied once and sync-github.sh has set the variables. A
+    # preview against a stack that does not exist fails on state, not on the change under review.
+    if: github.event_name == 'pull_request' && vars.__COMPONENT_VAR___WIF_PROVIDER != ''
+    steps:
+      - uses: actions/checkout@v4
+      # Pulumi compiles the Go program itself, so the preview needs the toolchain too.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: __COMPONENT__/infra/pulumi/go.mod
+          cache-dependency-path: __COMPONENT__/infra/pulumi/go.sum
+
+      # Keyless. A downloaded service-account JSON key is a long-lived credential in a file and is
+      # on the handbook's banned list. Pin this to a digest rather than `@v2` before you rely on
+      # the pipeline: the house rule is a released major at minimum, and a pinned digest for
+      # anything that handles credentials.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.__COMPONENT_VAR___WIF_PROVIDER }}
+          service_account: ${{ vars.__COMPONENT_VAR___DEPLOY_SA }}
+
+      - uses: pulumi/actions@v6
+        with:
+          command: preview
+          stack-name: dev
+          work-dir: __COMPONENT__/infra/pulumi
+          # Load-bearing, not hygiene. CD updates the Cloud Run image out of band; without a
+          # refresh Pulumi's state still holds the previous image, `ignore_changes` has nothing to
+          # preserve, and the preview proposes rolling the service back to it.
+          refresh: true
+          # A destructive change must be visible in review, not discovered in apply output.
+          comment-on-pr: true
+          diff: true
+
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    needs: [static]
+    # Main only, and inert until sync-github.sh has set the apply account's variable — which it
+    # does once the environment has been set up from a machine. The `if` keeps the job off other
+    # branches; the guard is the account's impersonation binding, which admits a token from the
+    # `infrastructure` environment of this repository and nothing else.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.__COMPONENT_VAR___APPLY_SA != ''
+    # The gate on every apply. Give the environment protection rules in the repository settings —
+    # required reviewers, and deployment branches limited to main. The apply account can change
+    # anything in the project, so an unprotected environment is an apply nobody approved.
+    environment: infrastructure
+    # Applies queue, one at a time, and are never cancelled: a `pulumi up` stopped halfway leaves
+    # resources half-changed and the stack locked.
+    concurrency:
+      group: __COMPONENT__-infra-apply
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write    # required for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v4
+      # Pulumi compiles the Go program itself, so the apply needs the toolchain too.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: __COMPONENT__/infra/pulumi/go.mod
+          cache-dependency-path: __COMPONENT__/infra/pulumi/go.sum
+
+      # Keyless, and the APPLY account: the only CI identity that can change the stack. Pin this to
+      # a digest rather than `@v2` before you rely on the pipeline: the house rule is a released
+      # major at minimum, and a pinned digest for anything that handles credentials.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.__COMPONENT_VAR___WIF_PROVIDER }}
+          service_account: ${{ vars.__COMPONENT_VAR___APPLY_SA }}
+
+      # The same stack the preview showed the pull request, applied as it merged.
+      - uses: pulumi/actions@v6
+        with:
+          command: up
+          stack-name: dev
+          work-dir: __COMPONENT__/infra/pulumi
+          # Load-bearing, as for the preview: without it the apply rolls the service back to the
+          # image Pulumi's state last saw, undoing CD's last deploy.
+          refresh: true
+          diff: true

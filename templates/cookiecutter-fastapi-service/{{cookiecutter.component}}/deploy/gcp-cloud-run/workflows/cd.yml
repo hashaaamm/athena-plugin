@@ -1,0 +1,163 @@
+# Build, push and deploy the backend to Cloud Run.
+#
+# Inert until configured: every job is gated on `vars.__COMPONENT_VAR___WIF_PROVIDER`, so a freshly
+# generated component has a reviewed deploy path that cannot fire by accident. Set the repository
+# variables below and it starts working — no edit to this file required.
+#
+# Every variable is prefixed with the component's name, so two components in one repository never
+# read each other's configuration:
+#
+#   __COMPONENT_VAR___WIF_PROVIDER           projects/…/workloadIdentityPools/…/providers/github
+#   __COMPONENT_VAR___DEPLOY_SA              <name>-ci-<env>@<project>.iam.gserviceaccount.com
+#   __COMPONENT_VAR___GCP_REGION             europe-west1
+#   __COMPONENT_VAR___IMAGE_REPO             europe-west1-docker.pkg.dev/<project>/<repo>
+#   __COMPONENT_VAR___CLOUD_RUN_SERVICE      the Cloud Run service name
+#   __COMPONENT_VAR___CLOUD_RUN_MIGRATE_JOB  the Cloud Run job that runs `alembic upgrade head`
+#                                            (empty if there is no database)
+#
+# Do not set them by hand. `infra/pulumi` exports every one of them and
+# `./infra/scripts/sync-github.sh` copies them in, so the names on both sides cannot drift — a
+# stack exporting `workload_identity_provider` to a pipeline reading
+# `vars.__COMPONENT_VAR___WIF_PROVIDER` is a job that is skipped forever and never says why. A unit
+# test in infra/pulumi/tests asserts the match.
+#
+# Every repository variable reaches a shell through `env:`, never interpolated into the script: a
+# repository variable is input to a shell like any other, and quoting it is the shell's job.
+#
+# Copied verbatim by cookiecutter, and installed as `.github/workflows/__COMPONENT__-cd.yml` with
+# the two tokens substituted — see the note in `__COMPONENT__-ci.yml`.
+name: __COMPONENT__ CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/**'
+      - '.github/workflows/__COMPONENT__-cd.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: __COMPONENT__-cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # required for Workload Identity Federation
+
+defaults:
+  run:
+    working-directory: __COMPONENT__
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    if: vars.__COMPONENT_VAR___WIF_PROVIDER != ''
+    environment: production
+    env:
+      IMAGE: ${{ vars.__COMPONENT_VAR___IMAGE_REPO }}/${{ vars.__COMPONENT_VAR___CLOUD_RUN_SERVICE }}:${{ github.sha }}
+      REGION: ${{ vars.__COMPONENT_VAR___GCP_REGION }}
+      SERVICE: ${{ vars.__COMPONENT_VAR___CLOUD_RUN_SERVICE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless: a downloaded service-account JSON key is a long-lived credential in a file, and
+      # the handbook bans them outright. Ask Athena for the approved-library list if you are
+      # tempted by an action that wants one.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v2` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.__COMPONENT_VAR___WIF_PROVIDER }}
+          service_account: ${{ vars.__COMPONENT_VAR___DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate to Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: __COMPONENT__/backend
+          file: __COMPONENT__/backend/docker/Dockerfile.prod
+          target: production
+          platforms: linux/amd64
+          push: true
+          # An immutable :sha tag, never :latest. A rollback is then a known image rather than a
+          # guess about what :latest pointed at last Tuesday.
+          tags: ${{ env.IMAGE }}
+          build-args: GIT_SHA=${{ github.sha }}
+          # An explicit scope, so another component's image does not evict these layers from the
+          # repository's one GitHub Actions cache.
+          cache-from: type=gha,scope=__COMPONENT__
+          cache-to: type=gha,mode=max,scope=__COMPONENT__   # mode=max caches the builder stage too
+
+      # Migrations run before the new revision takes traffic, and are expected to be
+      # backward-compatible with the currently-deployed code. Ask Athena for the database access
+      # and migrations rules for what "backward-compatible" has to mean here.
+      - name: Migrate
+        if: vars.__COMPONENT_VAR___CLOUD_RUN_MIGRATE_JOB != ''
+        env:
+          JOB: ${{ vars.__COMPONENT_VAR___CLOUD_RUN_MIGRATE_JOB }}
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "$JOB" --image "$IMAGE" --region "$REGION" --quiet
+          gcloud run jobs execute "$JOB" --region "$REGION" --wait
+
+      # `update`, not `deploy`. The shape of the service — service account, secrets, the Cloud SQL
+      # attachment — belongs to infrastructure-as-code. This pipeline owns exactly one field: the
+      # image. Two tools writing the same resource is how a plan fills up with phantom drift.
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          gcloud run services update "$SERVICE" --image "$IMAGE" --region "$REGION" --quiet
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe "$SERVICE" --region "$REGION" \
+            --format='value(status.url)')
+
+          # Liveness is what this pipeline is responsible for: the revision started and serves.
+          curl -fsS "$URL/health/live" >/dev/null
+          echo "live: $URL"
+
+          # Readiness can depend on something this pipeline does not do — a dependency that is not
+          # up yet, a first-run backfill. Report it, do not fail on it: failing here means a
+          # service's first deploy can never succeed. Download to a file rather than piping into
+          # grep, which closes the pipe and kills curl under `pipefail` on a check that had passed.
+          code=$(curl -s -o /tmp/ready.json -w '%{http_code}' "$URL/health/ready")
+          cat /tmp/ready.json
+          if [ "$code" != "200" ]; then
+            echo "::warning::$URL is live but not ready — check its dependencies"
+          fi
+
+  # Its own job, after the deploy, rather than a step inside it. A Docker-based action's image is
+  # pulled when its job starts, whether or not the step runs, so a skipped step still cost every
+  # deploy the pull; a skipped job never starts a runner. Without it, Sentry cannot attribute a
+  # regression to a commit.
+  sentry-release:
+    name: Sentry release
+    needs: deploy
+    if: vars.__COMPONENT_VAR___SENTRY_ORG != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # set_commits: auto reads the history since the previous release
+      - uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.__COMPONENT_VAR___SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.__COMPONENT_VAR___SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.__COMPONENT_VAR___SENTRY_PROJECT }}
+        with:
+          version: ${{ github.sha }}
+          environment: production
+          set_commits: auto

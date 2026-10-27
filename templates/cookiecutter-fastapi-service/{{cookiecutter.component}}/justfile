@@ -1,0 +1,185 @@
+# The {{ cookiecutter.component }} component's recipes. Recipe names are identical in every repository — an
+# engineer or agent should never have to read a justfile to know how to run the tests.
+# Ask Athena for the local development and command runner rules.
+#
+# Run them from this folder (`just check`) or from the repository root (`just {{ cookiecutter.component }} check`):
+# the root justfile mounts this one as a module, and `just` runs a module's recipes in the module's
+# own folder, so every relative path below means the same thing either way. That needs just 1.31 or
+# later, where modules are stable.
+#
+# This justfile owns the things that span the component (the stack, CI's gate, the
+# infrastructure) and DELEGATES everything language-specific to backend/justfile.
+{% raw %}
+set shell := ["bash", "-uc"]
+
+compose := "docker compose"
+ci      := "docker compose -f docker-compose.ci.yml"
+backend := "just --justfile backend/justfile --working-directory backend"
+
+# `--working-directory backend` so backend recipes run from backend/ exactly as they would if you
+# cd'd there. Stated explicitly rather than inherited.
+
+# Show available recipes
+default:
+    @just --list
+
+# --- The stack -----------------------------------------------------------
+
+# Start the full local stack with hot reload
+dev: _env
+    {{compose}} up --build
+
+# Stop the stack and remove volumes
+down:
+    {{compose}} down -v
+    -{{ci}} down -v
+
+# Tail logs for a service (default: backend)
+logs SERVICE="backend":
+    {{compose}} logs -f {{SERVICE}}
+
+# Open a shell in the backend container
+shell: _env
+    {{compose}} run --rm dev-runner bash
+
+# Create .env on first run. `just dev` from a clean clone must not need a manual step.
+# Every recipe that reaches docker compose depends on this, because compose reads the `.env` beside
+# it and a freshly generated component does not have one. Without it `just check` — the first command
+# anybody runs on a new project — fails on a missing env file rather than on anything about their
+# code, which is the worst possible first impression of a template.
+_env:
+    @test -f .env || (cp .env.example .env && echo "created .env from .env.example")
+
+# --- Quality -------------------------------------------------------------
+
+# Everything CI runs, in CI's order. If this passes, the pipeline passes.
+check: _env lint test
+
+# Lint, format check, type check and layer contracts, for every component
+lint: _env
+    {{backend}} lint
+
+# Apply formatting and safe autofixes, for every component
+fmt: _env
+    {{backend}} fmt
+
+# Run the full test suite in parallel. ARGS reach the backend suite.
+test *ARGS: _env
+    {{backend}} test {{ARGS}}
+
+# Run one test file or node, verbose and fail-fast
+test-one TARGET:
+    {{backend}} test-one {{TARGET}}
+
+# Dependency vulnerability scan
+audit: _env
+    {{backend}} audit
+
+# --- Database ------------------------------------------------------------
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# Apply all migrations
+db-migrate: _env
+    {{backend}} db-migrate
+
+# Create a new revision from model changes
+db-revision MESSAGE: _env
+    {{backend}} db-revision "{{MESSAGE}}"
+
+# Roll back one revision
+db-rollback: _env
+    {{backend}} db-rollback
+
+# Compare the models against the local database
+db-check: _env
+    {{backend}} db-check
+
+# Verify a single linear migration history. No database needed — this is the one CI runs
+db-heads: _env
+    {{backend}} db-heads
+
+# Drop and recreate the local database, then migrate
+db-reset: _env
+    {{compose}} down -v db
+    {{compose}} up -d db
+    @until {{compose}} exec -T db pg_isready >/dev/null 2>&1; do sleep 1; done
+    just db-migrate
+{% endraw %}{% endif %}{% raw %}
+# --- Build ---------------------------------------------------------------
+
+# Build the production images
+build:
+    {{backend}} build
+
+# --- Infrastructure ------------------------------------------------------
+#
+# Separate from `check` on purpose. `check` is the gate for application code and runs in Docker;
+# the stack has its own toolchain, its own workflow and its own gate, and pulling it into `check`
+# would make every backend change wait on a Pulumi install.
+
+# Unit-test the Pulumi components. No cloud credentials needed.
+infra-test:
+    cd infra/pulumi && uv run pytest -q
+
+# Lint and type-check the stack
+infra-lint:
+    cd infra/pulumi && uv run ruff check . && uv run ruff format --check . && uv run mypy .
+
+# --refresh on the next two recipes is load-bearing, not hygiene. CD updates the {% endraw %}{% if cookiecutter.deploy_target == "aws-ecs-express" %}Express service's{% else %}Cloud Run{% endif %}{% raw %} image
+# out of band; without a refresh, Pulumi's state still holds the previous image, ignore_changes has
+# nothing to preserve, and the next apply rolls the service back to it.
+
+# Show what `pulumi up` would change
+infra-preview STACK="dev" *FLAGS:
+    cd infra/pulumi && uv run pulumi preview --stack {{STACK}} --refresh --diff {{FLAGS}}
+
+# `pulumi up` asks for confirmation and refuses to run at all when nothing can answer:
+# "--yes must be passed in to proceed when running in non-interactive mode". That is the right
+# behaviour for the one command here that creates billable resources, so this recipe does not pass
+# --yes for you; it passes your flags through instead, and a pipeline or an agent types the word.
+# The stack name is positional, so the flag has to come after one.
+#
+# Creates real, billable resources — read the preview first. Unattended: `just infra-up dev --yes`
+infra-up STACK="dev" *FLAGS:
+    cd infra/pulumi && uv run pulumi up --stack {{STACK}} --refresh {{FLAGS}}
+
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# Secret values never pass through Pulumi: the stack creates empty containers, and this fills them.
+# Run it after the first `infra-up` and before `infra-first-deploy`, which applies again with what
+# it pinned. It generates each value, stores it as a new version without printing it, and `pulumi
+# config set`s the version. Idempotent; `--rotate` replaces every secret — and a new signing key
+# signs every user out, and reaches the service when the change pinning it merges and is applied
+# by CI. `just infra-first-deploy` and
+# `just infra-sync-github` both refuse to go on until this has run.
+
+# Generate, store and pin the stack's secrets; prints no value. `--rotate` replaces them
+infra-secrets STACK="dev" *FLAGS:
+    ./infra/scripts/secrets.sh {{STACK}} {{FLAGS}}
+{% endraw %}{% endif %}{% raw %}
+# There is no placeholder image. The first `infra-up` creates everything but the service{% endraw %}{% if cookiecutter.use_postgres == "yes" %} and the
+# migration {% if cookiecutter.deploy_target == "aws-ecs-express" %}task{% else %}job{% endif %}{% endif %}{% raw %}, because there is nothing real to run yet; this builds the production image
+# from this checkout, pushes it, sets `serviceImage` and applies, so the service is created on the
+# real build.{% endraw %}{% if cookiecutter.use_postgres == "yes" %} Then it runs the migrations exactly as CD does{% endif %}{% raw %}, waits for the rollout, and smoke-tests
+# the URL. Once, per stack: from then on CD owns the image. It applies, so it prompts as `infra-up`
+# does and passes your flags through.
+
+# Build and push the real image, create the service on it, migrate, smoke-test. Unattended: `--yes`
+infra-first-deploy STACK="dev" *FLAGS:
+    ./infra/scripts/first-deploy.sh {{STACK}} {{FLAGS}}
+
+# Copy stack outputs into GitHub repository variables, which un-gates the component's CD workflow
+infra-sync-github STACK="dev":
+    ./infra/scripts/sync-github.sh {{STACK}}
+
+# Destroying is two commands, not one, and they are not interchangeable. `pulumi destroy` removes
+# what the stack created. It cannot remove the bucket its own state lives in or the KMS key that
+# encrypts that state, because the stack never created them — the bootstrap script did. Run them
+# in this order; the teardown script enforces it rather than trusting you to remember.
+
+# Destroy everything the stack created. Prompts, for the same reason `infra-up` does.
+infra-destroy STACK="dev" *FLAGS:
+    cd infra/pulumi && uv run pulumi destroy --stack {{STACK}} --refresh {{FLAGS}}
+
+# Delete the state bucket and KMS key, which `destroy` cannot. Refuses unless every stack is empty
+infra-teardown:
+    ./infra/bootstrap/teardown.sh
+{% endraw %}

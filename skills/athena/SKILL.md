@@ -69,6 +69,12 @@ declared it. When none has, `athena_rules` returns no rules and an `advice` stri
 **That empty answer means "nobody wrote down which files this governs" — never "no rules apply".**
 Do not read it as a clean bill of health and carry on. Name the subject and ask again.
 
+**Say which cloud the change deploys to.** The same infrastructure files can target GCP or AWS —
+`infra/pulumi/components/network.py` exists in both — so a path cannot tell Athena which cloud's
+rules bind it, and you can. Pass `cloud="aws"` or `cloud="gcp"` to `athena_context` and
+`athena_rules` whenever the change touches infrastructure or deployment. Rules written for the
+other cloud are left out; rules that name no cloud still come back.
+
 ## Planning mode
 
 When you are producing a plan rather than code, add `plan=True`. You get the work back as ordered
@@ -187,7 +193,7 @@ Reach for these when you already know which question you are asking.
 
 | Tool | Ask it |
 | --- | --- |
-| `athena_rules` | "Here is the diff — what must hold?" **Say what the change is about: `topics=['authorization', 'migrations']`.** `paths` narrows it further, but only answers for files a page declares it governs — see below. A framework alone is refused. |
+| `athena_rules` | "Here is the diff — what must hold?" **Say what the change is about: `topics=['authorization', 'migrations']`.** `paths` narrows it further, but only answers for files a page declares it governs — see below. Add `cloud` for infrastructure. A framework or a cloud alone is refused. |
 | `athena_guide` | "How do I build X?" One guide, with its code and the rules that bind it. |
 | `athena_knowledge` | "What must I keep in mind about X?" Synthesis, not passages. |
 | `athena_get` | Read one thing in full, by redeeming a reference you were given. |

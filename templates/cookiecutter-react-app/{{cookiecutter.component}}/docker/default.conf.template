@@ -1,0 +1,82 @@
+# Rendered by the base image's entrypoint (envsubst) on container start, so ${PORT} is Cloud Run's
+# and not a guess. Only variables that are set in the container's environment are substituted, which
+# is why the lowercase nginx variables below — $uri, $api_host — survive intact. Three are:
+#
+#   PORT                    Cloud Run's, defaulted to 8080 in the image
+#   API_UPSTREAM_HOST       the API's host name, set by the stack when the site serves the API;
+#                           empty by default, and then /api/ and /health/ are 404s
+#   NGINX_LOCAL_RESOLVERS   the container's own DNS servers, exported by the base image's entrypoint
+#                           because the image sets NGINX_ENTRYPOINT_LOCAL_RESOLVERS
+server {
+    listen ${PORT};
+    server_name _;
+    root /usr/share/nginx/html;
+
+    # Client-side routing: every unknown path is the SPA's problem, not a 404. Without this,
+    # a hard refresh on any route but "/" returns nginx's 404 page.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Vite emits content-hashed filenames, so these are immutable by construction.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # index.html is the one file that must never be cached: it is the map to the hashed assets,
+    # and a cached copy pins a browser to a deploy that no longer exists.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # The API, on this site's own origin. The bundle calls the page's own origin, and these two
+    # prefixes — the API's routes under /api/v1/ and the health endpoints the dashboard reads — are
+    # forwarded to the API's own Cloud Run URL. Two run.app hostnames are two sites, so a
+    # SameSite=Strict cookie the API sets — the backend templates' refresh cookie — is never sent
+    # back to it across them, and every reload signs the user out; one origin is one site, and needs
+    # no CORS either. A client-side route under either prefix would never reach the app.
+    set $api_host "${API_UPSTREAM_HOST}";
+    location ~ ^/(api|health)/ {
+        if ($api_host = "") {
+            return 404;
+        }
+
+        # A variable in proxy_pass, so the name is resolved when a request needs it, through the
+        # container's own resolver, and re-resolved once the answer is a minute old. A literal host
+        # would be resolved once, at start, and its addresses kept for the life of the instance.
+        # IPv4 only, so an instance with no IPv6 egress never picks an address it cannot reach.
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=60s ipv6=off;
+        resolver_timeout 5s;
+        # No URI part, so the request's own path and query are sent unchanged.
+        proxy_pass https://$api_host;
+        proxy_http_version 1.1;
+
+        # The API's platform routes on Host and presents a certificate for its own name, so it is
+        # sent its own name — Host and SNI both — never the site's. Every other header passes
+        # through: Authorization, the refresh cookie, and Origin, which the cookie routes' CSRF
+        # check reads.
+        proxy_set_header Host $api_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $api_host;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+        # nginx verifies nothing about an upstream's certificate unless told to.
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 3;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+
+        # The same budget CloudFront gives the API on the AWS target: ten seconds to connect, sixty
+        # to answer.
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+        # Cloud Run's own ceiling on an HTTP/1 request body. nginx's default, one megabyte, would
+        # refuse an upload the API accepts.
+        client_max_body_size 32m;
+    }
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+}

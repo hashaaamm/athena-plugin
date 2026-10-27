@@ -1,0 +1,128 @@
+# Build the bundle and publish it: S3 behind CloudFront.
+#
+# Inert until configured: the job is gated on `vars.__COMPONENT_VAR___AWS_DEPLOY_ROLE_ARN`, so a
+# freshly generated component has a reviewed deploy path that cannot fire by accident. Run
+# `just infra-sync-github` and it starts working — no edit to this file required.
+#
+#   __COMPONENT_VAR___AWS_DEPLOY_ROLE_ARN         arn:aws:iam::<account>:role/<name>-deploy-<env>
+#   __COMPONENT_VAR___AWS_REGION                  eu-west-1
+#   __COMPONENT_VAR___SITE_BUCKET                 the private bucket the bundle is uploaded to
+#   __COMPONENT_VAR___CLOUDFRONT_DISTRIBUTION_ID  the distribution in front of it
+#   __COMPONENT_VAR___SITE_URL                    https://<id>.cloudfront.net, for the smoke test
+#   __COMPONENT_VAR___API_URL                     where the bundle calls the API — compiled INTO it:
+#                                                 `/`, the site's own origin, while the distribution
+#                                                 serves the API; else the backend's own address
+#
+# Every one is a stack output — the API's is the stack's `api_url`, derived from its `apiUrl` and
+# `apiSameOrigin` — copied in by `infra/scripts/sync-github.sh`, so the names on both sides cannot drift;
+# infra/pulumi/tests/contract.test.ts asserts the match. Each is prefixed with the component's name,
+# because one repository holds several components and each has a deploy role of its own.
+#
+# **The ordering that makes this correct.** Vite inlines VITE_* at build time, so the API origin is
+# compiled into the JavaScript and nothing done to the bucket or the distribution afterwards can
+# change it. A bundle built without one would call the local development address, deploy cleanly,
+# serve a page and answer nothing — so the job refuses to build instead.
+#
+# The upload, the invalidation and the smoke test are `infra/scripts/publish.sh`, the same script
+# `just infra-first-deploy` runs, so the first deploy and every later one cannot drift apart.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json), to
+# .github/workflows/__COMPONENT__-cd.yml at the repository root. The only templating here is two
+# plain tokens the post-generation hook replaces; nothing here may contain a cookiecutter variable.
+name: __COMPONENT__ CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/**'
+      - '.github/workflows/__COMPONENT__-cd.yml'
+  # Also the way to rebuild after the API's address changes: nothing in the repository has to change
+  # for the deployed bundle to be wrong.
+  workflow_dispatch:
+
+concurrency:
+  group: __COMPONENT__-cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # required for the GitHub OIDC token the deploy role trusts
+
+defaults:
+  run:
+    working-directory: __COMPONENT__
+
+jobs:
+  deploy:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    if: vars.__COMPONENT_VAR___AWS_DEPLOY_ROLE_ARN != ''
+    # The deploy role trusts a token whose subject is this environment and nothing else. Give the
+    # environment protection rules in the repository settings; they are the gate on a deploy.
+    environment: production
+    steps:
+      # First, before any step that runs in the component's folder: the folder does not exist
+      # until the repository is on disk.
+      - uses: actions/checkout@v4
+
+      # Resolved before anything is built, because the alternative is discovering it from a browser
+      # console after the deploy reported success. Read through `env:` rather than interpolated
+      # into the script: a repository variable is untrusted input to a shell otherwise.
+      - name: Resolve the API origin
+        id: origin
+        env:
+          API_URL: ${{ vars.__COMPONENT_VAR___API_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$API_URL" ]; then
+            echo "::error::__COMPONENT_VAR___API_URL is not set, so this build would compile the local" \
+                 "development address into the bundle. Set the stack's apiUrl and run" \
+                 "just infra-sync-github (infra/README.md), then re-run this workflow."
+            exit 1
+          fi
+          echo "url=$API_URL" >> "$GITHUB_OUTPUT"
+          if [ "$API_URL" = "/" ]; then
+            echo "the bundle will call its own origin, where the distribution serves the API"
+          else
+            echo "the bundle will call $API_URL"
+          fi
+
+      # Reads the pinned version from package.json's `packageManager` field.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: __COMPONENT__/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: __COMPONENT__/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        env:
+          VITE_API_URL: ${{ steps.origin.outputs.url }}
+        run: pnpm build
+
+      # Keyless: an access key in a repository secret is a long-lived credential in a file, and the
+      # handbook bans them outright. GitHub's OIDC token is exchanged for a session of an hour.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v4` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.__COMPONENT_VAR___AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.__COMPONENT_VAR___AWS_REGION }}
+
+      # Two syncs, the index invalidated and waited on, the previous deploy's hashed files pruned,
+      # then `/`, a deep route and — when the site serves the API — /health/live smoke-tested. The
+      # script says why each step is where it is.
+      - name: Publish
+        env:
+          BUCKET: ${{ vars.__COMPONENT_VAR___SITE_BUCKET }}
+          DISTRIBUTION: ${{ vars.__COMPONENT_VAR___CLOUDFRONT_DISTRIBUTION_ID }}
+          SITE_URL: ${{ vars.__COMPONENT_VAR___SITE_URL }}
+          API_URL: ${{ steps.origin.outputs.url }}
+        run: ./infra/scripts/publish.sh dist

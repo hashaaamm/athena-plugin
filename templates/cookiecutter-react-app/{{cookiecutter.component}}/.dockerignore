@@ -1,0 +1,19 @@
+# The build context is the component's folder, because that is where the application is. Everything
+# here that the image does not need is excluded, and the infrastructure most of all: infra/pulumi
+# has a node_modules of its own, and sending it to the daemon on every build is build time spent
+# on nothing. Ask Athena for the containerization rules.
+.git
+.github
+.gitignore
+infra
+node_modules
+.pnpm-store
+dist
+.vite
+coverage
+*.md
+.env
+.env.*
+!.env.example
+docker-compose.yml
+justfile

@@ -1,0 +1,25 @@
+# Fast, deterministic checks only. Linting the whole module, tests and code generation belong in
+# `just check` and CI — a slow hook gets bypassed with --no-verify, and then so do the useful ones.
+# Ask Athena for the local development and command runner rules.
+#
+# pre-commit runs from the repository root, and this file is the {{ cookiecutter.component }} component's, so every path
+# below is spelled from the root. Install it from the root with
+#   pre-commit install --config {{ cookiecutter.component }}/.pre-commit-config.yaml
+# A repository with several components has one hook; the last install wins, so a repository that
+# wants every component's hooks keeps one root .pre-commit-config.yaml listing them.
+repos:
+  # gofmt + goimports, configured by backend/.golangci.yml so the hook and `just fmt` agree on the
+  # import grouping. pre-commit builds the hook with its own Go toolchain, so the host needs none.
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v2.15.0
+    hooks:
+      - id: golangci-lint-fmt
+        args: [--config={{ cookiecutter.component }}/backend/.golangci.yml]
+        files: ^{{ cookiecutter.component }}/backend/.*\.go$
+
+  # The same release CI's secret scan runs, with the component's own allowlist.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        args: [--config={{ cookiecutter.component }}/.gitleaks.toml]

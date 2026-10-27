@@ -1,0 +1,122 @@
+# Backend recipes. Everything specific to the Go service lives here; the root justfile delegates to
+# it. Recipe names are the standard ones — ask Athena for the local development and command runner
+# rules.
+#
+# Run these from the component's folder (`just test`), from the repository root
+# (`just {{ cookiecutter.component }} test`), or from here (`cd backend && just test`).
+# Every recipe runs in a container built from docker/Dockerfile.dev: the project needs Docker and
+# `just` on the host, and no Go toolchain, linter or code generator at all.
+{% raw %}
+set shell := ["bash", "-uc"]
+
+# Recipes run from backend/. The compose files live in the component's folder because they orchestrate
+# the whole stack; Compose resolves build contexts and `env_file` relative to the file itself, so
+# pointing at them from here needs no other adjustment.
+compose := "docker compose -f ../docker-compose.yml"
+ci      := "docker compose -f ../docker-compose.ci.yml"
+# The tooling container, without the database: linting and code generation do not need one, and
+# starting Postgres for them is twenty seconds of nothing.
+run     := "docker compose -f ../docker-compose.yml run --rm --build --no-deps dev-runner"
+# The tooling container with the database up, for the recipes that talk to it.
+run-db  := "docker compose -f ../docker-compose.yml run --rm --build dev-runner"
+
+# Show available recipes
+default:
+    @just --list
+
+# Compose reads the root `.env`, and a freshly generated project does not have one. The root
+# justfile creates it before delegating here; this does the same for anyone who runs a backend
+# recipe directly — `(cd backend && just lock)` is the first command a new project runs.
+_env:
+    @test -f ../.env || (cp ../.env.example ../.env && echo "created .env from .env.example")
+
+# --- Quality -------------------------------------------------------------
+
+# Everything CI runs, in CI's order. If this passes, the pipeline passes.
+check: _env lint gen-check test
+
+# Module integrity, vet, staticcheck, gosec, formatting and the layer rules (.golangci.yml)
+lint: _env
+    {{run}} sh -c 'go mod verify && golangci-lint run ./...'
+
+# Apply formatting and safe autofixes
+fmt: _env
+    {{run}} sh -c 'golangci-lint fmt ./... && golangci-lint run --fix ./...'
+
+# Run the full suite with the race detector, against a real Postgres: `just test -run TestLogin`
+test *ARGS: _env
+    {{ci}} run --rm --build test-runner go test -race -cover ./... {{ARGS}}; status=$?; {{ci}} down --remove-orphans; exit $status
+
+# Run one package or test, verbose, uncached and fail-fast: `just test-one ./internal/service -run TestLogin`
+test-one *ARGS: _env
+    {{ci}} run --rm --build test-runner go test -race -count=1 -failfast -v {{ARGS}}; status=$?; {{ci}} down --remove-orphans; exit $status
+
+# Known-vulnerability scan of the code that is actually reachable (govulncheck)
+audit: _env
+    {{run}} govulncheck ./...
+
+# Resolve go.sum: run once after generating, and after any dependency edit. Commit both files.
+lock: _env
+    {{run}} go mod tidy
+
+# Open a shell in the tooling container
+shell: _env
+    {{compose}} run --rm dev-runner bash
+
+# Tail backend logs
+logs: _env
+    {{compose}} logs -f backend
+
+# --- Generated code ------------------------------------------------------
+
+# Regenerate the sqlc data layer and the OpenAPI documents (scripts/gen.sh)
+gen: _env
+    {{run}} bash scripts/gen.sh
+
+# Fail if anything generated is out of date — the check CI runs
+gen-check: _env
+    {{run}} bash scripts/gen.sh --check
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# --- Database ------------------------------------------------------------
+
+# Apply all migrations — the same subcommand the deployed migrate job runs
+db-migrate: _env
+    {{run-db}} go run ./cmd/api migrate up
+
+# Create a new SQL migration: `just db-new create_invoices`. Then `just gen` for its queries
+db-new NAME: _env
+    {{run}} goose -dir migrations -s create {{NAME}} sql
+
+# Roll back one migration
+db-rollback: _env
+    {{run-db}} go run ./cmd/api migrate down
+
+# Show which migrations have run
+db-status: _env
+    {{run-db}} go run ./cmd/api migrate status
+
+# Drop and recreate the local database, then migrate
+db-reset: _env
+    {{compose}} down -v db
+    {{compose}} up -d --wait db
+    just db-migrate
+{% endraw %}{% endif %}{% raw %}
+# --- Build ---------------------------------------------------------------
+
+# Build the production image
+build:
+    DOCKER_BUILDKIT=1 docker build \
+        --platform=linux/amd64 \
+        -f docker/Dockerfile.prod \
+        --target production \
+        --build-arg GIT_SHA=$(git rev-parse --short HEAD) \
+        -t $(just _image) \
+        .
+
+# The image's local name. The one a deploy pushes is built by infra/scripts/first-deploy.sh and CD,
+# under the registry's own path.
+_image:
+    @echo "{{env_var_or_default('IMAGE_REPO', 'local/' + image_name)}}:$(git rev-parse --short HEAD)"
+
+image_name := "{% endraw %}{{ cookiecutter.__name }}{% raw %}"
+{% endraw %}

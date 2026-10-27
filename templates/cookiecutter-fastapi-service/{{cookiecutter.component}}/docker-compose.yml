@@ -1,0 +1,79 @@
+# The component's local stack. `just dev` from a clean clone must reach a running service in under
+# five minutes. Ask Athena for the local development and command runner rules.
+#
+# This file is at the component's root, not in backend/, because it orchestrates the stack rather
+# than one service: a compose file per service cannot express "the backend waits for the database
+# to be healthy". A browser client is not part of it — it is a component of its own, generated from
+# cookiecutter-react-app, and runs against this API from its own folder.
+#
+# The project name is the component's full name, so two components in one repository never share a
+# container, a network or a volume. The host ports are the only other thing that can collide, and
+# each one is overridable from `.env`.
+
+name: {{ cookiecutter.__name }}
+
+services:
+  backend: &backend
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.dev
+    env_file: .env
+    environment:
+      # Pinned here so a .env tuned for host access (localhost:5432) still works inside the
+      # container, where the database is reachable as db:5432.
+      {%- if cookiecutter.use_postgres == "yes" %}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      {%- endif %}
+      ENVIRONMENT: local
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      {%- if cookiecutter.use_postgres == "yes" %}
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      {%- endif %}
+      - ./backend/pyproject.toml:/app/pyproject.toml
+      # Needed by `lint-imports`, which is part of `just lint`.
+      - ./backend/.importlinter:/app/.importlinter
+    ports:
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+      - "${DEBUGPY_HOST_PORT:-5678}:5678"   # debugpy
+    {%- if cookiecutter.use_postgres == "yes" %}
+    depends_on:
+      db:
+        condition: service_healthy
+    {%- endif %}
+
+  # Same image and same mounts, no server. Used by `just lint`, `just fmt`, `just db-*`.
+  # Keeping tooling in the image CI uses is what stops "passes locally, fails in CI".
+  dev-runner:
+    <<: *backend
+    ports: []
+    command: ["sleep", "infinity"]
+    profiles: ["tools"]
+{% if cookiecutter.use_postgres == "yes" %}
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-{{ cookiecutter.project_slug.replace('-', '_') }}}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-only-not-a-secret}
+      POSTGRES_DB: ${POSTGRES_DB:-{{ cookiecutter.project_slug.replace('-', '_') }}}
+    ports:
+      # Overridable, because a host port is the one thing in this file that can collide with
+      # something outside the component. Two services generated from this template, or one
+      # alongside any other Postgres on the machine, otherwise fail to start with "port is already
+      # allocated" — which reads as a problem with the new component rather than with the port.
+      - "${POSTGRES_HOST_PORT:-55432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # `depends_on` alone does not wait for readiness; this is what makes it mean something.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-{{ cookiecutter.project_slug.replace('-', '_') }}}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  db-data:
+{%- endif %}

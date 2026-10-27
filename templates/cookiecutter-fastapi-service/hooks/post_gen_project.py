@@ -1,8 +1,15 @@
-"""Post-generation clean-up.
+"""Post-generation clean-up, and the component's place in the repository around it.
 
-Cookiecutter renders the whole tree and then runs this. Deleting here rather than branching in
-Jinja keeps the templates readable: a file either exists for every project or it is removed once,
-in one place, by a rule you can read.
+Cookiecutter renders the whole tree into `<repo-root>/<component>/` and then runs this, with that
+folder as the working directory. Deleting here rather than branching in Jinja keeps the templates
+readable: a file either exists for every project or it is removed once, in one place, by a rule you
+can read.
+
+Three things land outside the folder, and they are the only three: the component's workflows, under
+the repository's one `.github/workflows/`, prefixed with the component's name; a `mod` line in the
+root `justfile`; and a line in the root `AGENTS.md`. Each is written so a second component generated
+into the same repository adds to it rather than colliding with it, and so the same component
+generated twice is refused before anything is overwritten.
 """
 
 from __future__ import annotations
@@ -12,7 +19,23 @@ import stat
 import sys
 from pathlib import Path
 
+#: `<repo-root>/<component>/`, where cookiecutter rendered the tree.
 PROJECT = Path.cwd()
+#: The repository the component was generated into: `-o` on the cookiecutter command line.
+ROOT = PROJECT.parent
+
+COMPONENT = "{{ cookiecutter.component }}"
+COMPONENT_VAR = "{{ cookiecutter.__component_var }}"
+PROJECT_NAME = "{{ cookiecutter.project_name }}"
+
+#: The only templating in a workflow file. Workflows are copied without Jinja rendering, because a
+#: GitHub Actions expression and a Jinja one are written with the same two braces; these two tokens
+#: are substituted as plain text instead. `__COMPONENT_VAR__` first: it is the longer token, and a
+#: repository variable is written `vars.__COMPONENT_VAR___AWS_REGION`.
+TOKENS = (
+    ("__COMPONENT_VAR__", COMPONENT_VAR),
+    ("__COMPONENT__", COMPONENT),
+)
 
 #: Scripts a human or a container runs directly. Cookiecutter writes rendered files with the
 #: default mode, so the executable bit has to be set here or `./infra/bootstrap/state-bucket.sh`
@@ -25,25 +48,93 @@ EXECUTABLE = (
     "backend/docker/start.sh",
     "infra/bootstrap/state-bucket.sh",
     "infra/bootstrap/teardown.sh",
+    "infra/scripts/first-deploy.sh",
     "infra/scripts/sync-github.sh",
     "infra/scripts/secrets.sh",
 )
 
 USE_POSTGRES = "{{ cookiecutter.use_postgres }}" == "yes"
 USE_SENTRY = "{{ cookiecutter.use_sentry }}" == "yes"
-SLUG = "{{ cookiecutter.project_slug }}"
 
 DEPLOY_TARGET = "{{ cookiecutter.deploy_target }}"
+#: How the root AGENTS.md names each deploy target.
+TARGET_NAMES = {"aws-ecs-express": "ECS Express Mode", "gcp-cloud-run": "Cloud Run", "aws-s3-cloudfront": "S3 and CloudFront"}
+
+#: What a root `justfile` starts as when this is the repository's first component. Identical in every
+#: template, because whichever component is generated first writes it.
+ROOT_JUSTFILE = """\
+# The repository root. Each component is a folder with a justfile of its own, mounted here as a
+# `just` module (just 1.31 or later): `just <component> <recipe>` from here, or `just <recipe>` from
+# inside the folder. A module's recipes run in its own folder either way.
+# Ask Athena for the local development and command runner rules.
+
+# Show every component and its recipes
+default:
+    @just --list --list-submodules
+"""
+
+#: What a root `AGENTS.md` starts as when this is the repository's first component. Identical in
+#: every template, for the same reason.
+ROOT_AGENTS = """\
+# Agent rules
+
+The general standards come from Athena: ask it for what a change needs before planning it — the
+athena skill says how. This file is a **map**: the repository is made of components, a folder
+each, and every component carries the rules for working inside it in its own `AGENTS.md`. Read that
+one before changing anything in its folder.
+
+Commands go through `just`: `just <component> <recipe>` from here, or `just <recipe>` from inside
+the component's folder. A component's workflows are `.github/workflows/<component>-*.yml`, and the
+repository variables it reads are prefixed with its name in capitals.
+
+## Components
+
+"""
+
+
+def _root_justfile() -> None:
+    """Mount the component as a module of the root justfile, creating that file if needed.
+
+    `just` accepts `justfile` or `.justfile`, in any case, and refuses to choose between two — so an
+    existing one under any of those names is the one appended to.
+    """
+    names = ("justfile", ".justfile")
+    existing = [path for path in ROOT.iterdir() if path.is_file() and path.name.lower() in names]
+    path = existing[0] if existing else ROOT / "justfile"
+    if not path.exists():
+        path.write_text(ROOT_JUSTFILE)
+    text = path.read_text()
+    line = f"mod {COMPONENT}"
+    entries = [entry.strip() for entry in text.splitlines()]
+    if line not in entries:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        # A blank line before the first `mod`, so the comment above it is not read as the module's
+        # doc comment; the `mod` lines after it follow on.
+        separator = "" if not text or any(e.startswith("mod ") for e in entries) else "\n"
+        path.write_text(f"{text}{separator}{line}\n")
+
+
+def _root_agents(summary: str) -> None:
+    """List the component in the root `AGENTS.md`, creating that file if needed."""
+    path = ROOT / "AGENTS.md"
+    if not path.exists():
+        path.write_text(ROOT_AGENTS)
+    text = path.read_text()
+    if f"]({COMPONENT}/AGENTS.md)" not in text:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        path.write_text(f"{text}- [`{COMPONENT}/`]({COMPONENT}/AGENTS.md) — {summary}\n")
 
 
 def _select_deploy_target() -> None:
     """Move the chosen target's stack and pipelines into place, and drop every other target.
 
     Each target under deploy/ is a complete implementation of the same interface: an infra/
-    directory whose justfile has the same recipes (lock, test, lint, preview, up, sync-github,
-    destroy, teardown), and the deploy workflows those recipes un-gate. The generated repository
-    has exactly one of them, at the paths every other file already refers to — infra/ and
-    .github/workflows/ — so nothing outside deploy/ needs to know which target was chosen.
+    directory driven by the same `just infra-*` recipes, and the deploy workflows those recipes
+    un-gate. The component has exactly one of them, at the paths every other file already refers
+    to — infra/ and .github/workflows/ — so nothing outside deploy/ needs to know which target was
+    chosen.
     """
     deploy = PROJECT / "deploy"
     chosen = deploy / DEPLOY_TARGET
@@ -56,6 +147,41 @@ def _select_deploy_target() -> None:
     shutil.rmtree(deploy)
 
 
+def _install_workflows() -> None:
+    """Copy the component's workflows to the repository's `.github/workflows/`, prefixed.
+
+    GitHub reads workflows from the repository root and nowhere else, so this is the one part of a
+    component that cannot live in its folder. Each file becomes `<component>-<name>`, with the two
+    tokens substituted. Nothing is overwritten: a destination that exists means this component
+    name is taken, and the whole generation is refused before a single file is written, because a
+    half-replaced pipeline deploys one component with another's configuration.
+    """
+    source = PROJECT / ".github" / "workflows"
+    target = ROOT / ".github" / "workflows"
+    plan = [
+        (workflow, target / f"{COMPONENT}-{workflow.name}")
+        for workflow in sorted(source.iterdir())
+        if workflow.is_file()
+    ]
+    taken = [destination for _, destination in plan if destination.exists()]
+    if taken:
+        listing = "\n".join(f"    {path.relative_to(ROOT)}" for path in taken)
+        sys.stderr.write(
+            f"\n  ERROR: component {COMPONENT!r} already has workflows in this repository:\n\n"
+            f"{listing}\n\n"
+            "  Nothing was overwritten. Generate it under another name, e.g. component=api2, or\n"
+            "  remove the existing component first.\n\n"
+        )
+        sys.exit(1)
+    target.mkdir(parents=True, exist_ok=True)
+    for workflow, destination in plan:
+        text = workflow.read_text()
+        for token, value in TOKENS:
+            text = text.replace(token, value)
+        destination.write_text(text)
+    shutil.rmtree(PROJECT / ".github")
+
+
 def _remove(*relative_paths: str) -> None:
     for relative in relative_paths:
         target = PROJECT / relative
@@ -66,8 +192,15 @@ def _remove(*relative_paths: str) -> None:
 
 
 def main() -> None:
-    # First, so every path below is the one the generated repository has.
+    # First, so every path below is the one the component has.
     _select_deploy_target()
+
+    # Before anything else lands outside the folder: this is the step that refuses, and a refusal
+    # must leave the repository as it found it. Cookiecutter deletes the component folder itself
+    # when this hook exits non-zero.
+    _install_workflows()
+    _root_justfile()
+    _root_agents(f"{PROJECT_NAME}: a FastAPI service in Python, deployed to {TARGET_NAMES[DEPLOY_TARGET]}")
 
     if not USE_SENTRY:
         _remove("backend/app/core/observability.py")
@@ -134,24 +267,42 @@ def main() -> None:
         if target.exists():
             target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+    secrets = (
+        "just infra-secrets" + " " * 18 + "generates the signing key{% if cookiecutter.deploy_target == 'gcp-cloud-run' %} and the database password{% endif %}, pins the version"
+        if USE_POSTGRES
+        else "(nothing)" + " " * 27 + "no database, so no secret the stack generates"
+    )
     #: The lockfile is not templated — a committed one would pin whatever existed when the
     #: template was last touched — and every image build installs with --frozen, so the first
     #: command in a new project is always resolving it.
     sys.stdout.write(
         "\n"
-        f"  Created {SLUG}/\n"
+        f"  Created {COMPONENT}/, with .github/workflows/{COMPONENT}-*.yml and `mod {COMPONENT}` in\n"
+        "  the root justfile. Run its recipes as `just <recipe>` inside the folder, or as\n"
+        f"  `just {COMPONENT} <recipe>` from the repository root.\n"
         "\n"
         "  First commands:\n"
         "\n"
-        f"    cd {SLUG} && cp .env.example .env\n"
+        f"    cd {COMPONENT} && cp .env.example .env\n"
         "    (cd backend && uv lock)        # the lockfile is not templated; resolve it once\n"
         "    just dev\n"
         "\n"
         "  Then: just check\n"
         "\n"
-        "  Deploying is a separate sequence and it starts on your machine, not in CI.\n"
-        f"  Read {SLUG}/infra/README.md before running anything under infra/: the first\n"
-        "  command there creates cloud resources and costs money.\n"
+        "  Deploying is a separate sequence and it starts on your machine, not in CI. Read\n"
+        f"  {COMPONENT}/infra/README.md before running anything under infra/: the first command\n"
+        "  there creates cloud resources and costs money. The order, from inside the folder:\n"
+        "\n"
+        "    1. ./infra/bootstrap/state-bucket.sh   the state bucket and its key, once per account\n"
+        "    2. pulumi -C infra/pulumi stack init   the bootstrap prints the exact command\n"
+        "    3. {% if cookiecutter.deploy_target == 'aws-ecs-express' %}githubSubjectPrefix                 pulumi config set --plaintext; infra/README.md{% else %}(nothing on GCP)                    Workload Identity trusts the repository by name{% endif %}\n"
+        "    4. just infra-up                       everything but the service\n"
+        f"    5. {secrets}\n"
+        "    6. just infra-first-deploy             the real image, the migrations, the service live\n"
+        "    7. just infra-sync-github              copies the outputs into repository variables\n"
+        "       protect `infrastructure`            required reviewers, main only; GitHub settings\n"
+        f"    8. push                                CD owns every image, {COMPONENT}-infra.yml every\n"
+        "                                           infrastructure change\n"
         "\n"
     )
 

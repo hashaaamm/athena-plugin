@@ -1,0 +1,84 @@
+# The dev stack. Cheapest viable configuration at every layer.
+#
+# `pulumi stack init dev --secrets-provider="awskms://alias/pulumi-state?region=..."` records
+# `secretsprovider` and `encryptedkey` in this file alongside the configuration below. The
+# bootstrap script prints the exact command. Every key below is read in one place:
+# internal/stackconfig/config.go.
+config:
+  # The provider refuses credentials for any other account — the wrong-account guard. Set it to
+  # the account this stack deploys into; one account per environment is the recommendation, so a
+  # `prod` stack names a different number.
+  {{ cookiecutter.__name }}:accountId: "{{ cookiecutter.aws_account_id }}"
+  {{ cookiecutter.__name }}:region: {{ cookiecutter.aws_region }}
+  # The STACK's environment. All it does is name resources — `{{ cookiecutter.__name }}-dev`,
+  # and every role, secret and repository with the same suffix. The application never sees it.
+  {{ cookiecutter.__name }}:environment: dev
+  # The APPLICATION's environment: the `ENVIRONMENT` variable on the ECS task, and one of
+  # local / test / staging / production. It decides how the service behaves — `production`
+  # serves no `/docs` and no `/openapi.json`. Separate from the line above because a stack called
+  # `dev` that the whole company can reach is production to the application, and a stack called
+  # `prod` standing up a demo is not. Set it to `production` in the stack real users reach.
+  {{ cookiecutter.__name }}:appEnvironment: staging
+  # The repository's slug and the component's name. Every resource name is built from it, so it
+  # is not decoration, and two components in one account never share one. Changing it renames the
+  # Express service, the ECR repository, the roles and the VPC.
+  {{ cookiecutter.__name }}:slug: {{ cookiecutter.__name }}
+  # The image the Express service{% if cookiecutter.use_postgres == "yes" %} and its migration task{% endif %} are created on. Empty until
+  # `just infra-first-deploy` builds the real image, pushes it and records it here, and until then
+  # the stack creates everything but the service — there is no placeholder image. After the first
+  # deploy CD owns the image; this stays what the service was first created with.
+  {{ cookiecutter.__name }}:serviceImage: ""
+  # The CI roles trust tokens from exactly this repository. Anything else here means some other
+  # repository can deploy.
+  {{ cookiecutter.__name }}:githubRepository: {{ cookiecutter.github_repository }}
+  # The start of the `sub` claim GitHub issues for that repository. Empty means the name-only form,
+  # repo:{{ cookiecutter.github_repository }}. Many repositories now get the immutable form with
+  # numeric ids instead, and a trust policy for the wrong form admits no token at all. Ask GitHub:
+  #   gh api repos/{{ cookiecutter.github_repository }}/actions/oidc/customization/sub --jq .sub_claim_prefix
+  # and paste what it prints. sync-github.sh checks the two agree before it un-gates CD.
+  {{ cookiecutter.__name }}:githubSubjectPrefix: ""
+  # Express Mode cannot scale to zero: one task runs, and bills, whether or not anyone calls it.
+  {{ cookiecutter.__name }}:minTasks: "1"
+  {{ cookiecutter.__name }}:maxTasks: "4"
+  # A quarter vCPU and 512 MiB, the smallest Fargate size. Fargate accepts only fixed pairs;
+  # stackconfig.FargateSizes is the list, and anything else is refused when the stack loads.
+  {{ cookiecutter.__name }}:cpu: "256"
+  {{ cookiecutter.__name }}:memory: "512"
+  # Two is the minimum Express Mode and an RDS subnet group accept. Three buys one more zone the
+  # service survives losing, at the price of one more load-balancer node and its public address.
+  {{ cookiecutter.__name }}:availabilityZoneCount: "2"
+  # Browser origins allowed to call the API, comma-separated; CORS_ORIGINS on the service. Empty
+  # means no browser on another origin may call it. A browser client is generated from
+  # templates/cookiecutter-react-app into its own repository with its own stack (ADR-0022): put
+  # that stack's `site_url` output here.
+  {{ cookiecutter.__name }}:corsOrigins: ""
+{%- if cookiecutter.use_postgres == "yes" %}
+  # Where the refresh token travels; REFRESH_TRANSPORT on the service. `body` for a server-to-server
+  # caller, `cookie` for a browser client, and `cookie` needs corsOrigins. A session that survives a
+  # reload also needs the SPA and the API on one site: the React template serves this API under
+  # /api/* on the app's own origin by default, and corsOrigins then names that origin, which the
+  # cookie routes' CSRF check reads. A domain of your own is the other way.
+  {{ cookiecutter.__name }}:refreshTransport: body
+{%- endif %}
+{%- if cookiecutter.use_postgres == "yes" %}
+  # RDS for PostgreSQL. The smallest Graviton burstable class on the gp3 floor, in one AZ, is the
+  # cheapest managed Postgres AWS offers, and with the running task it is the standing charge in
+  # this stack. infra/README.md has what each value is and what moving off it buys.
+  {{ cookiecutter.__name }}:databaseInstanceClass: db.t4g.micro
+  {{ cookiecutter.__name }}:databaseStorageGb: "20"
+  {{ cookiecutter.__name }}:databaseMultiAz: "false"
+  # The Postgres role the service logs in as, with an IAM token and no password. The migration task
+  # creates it and grants it row privileges; the task role may connect as it and nothing else.
+  {{ cookiecutter.__name }}:databaseAppRole: app_iam
+  # A VersionId, not a value: `just infra-secrets dev` generates the token signing key, puts it in
+  # its Secrets Manager secret and writes the VersionId here. Until then the stack mounts nothing,
+  # exports secrets_ready=false, and sync-github.sh will not un-gate CD. Never type a value here.
+  {{ cookiecutter.__name }}:jwtSecretVersion: ""
+{%- endif %}
+{%- if cookiecutter.use_sentry == "yes" %}
+  # Set to the VersionId that
+  # `aws secretsmanager put-secret-value --secret-id {{ cookiecutter.__name }}-sentry-dsn-dev --secret-string <dsn>`
+  # prints. Until then the secret is empty and nothing mounts it, because a secret with no value
+  # is a task that cannot start rather than a service that starts without error tracking.
+  {{ cookiecutter.__name }}:sentryDsnVersion: ""
+{%- endif %}

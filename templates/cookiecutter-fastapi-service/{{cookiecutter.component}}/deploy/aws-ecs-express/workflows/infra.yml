@@ -1,0 +1,167 @@
+# Infrastructure CI.
+#
+# The component tests run on every pull request and need no cloud credentials — that is most of the
+# argument for Pulumi over HCL, so it is the cheapest and most-run job here. The preview needs
+# cloud access and is gated on the stack having been applied at least once; its diff is posted to
+# the pull request, because a preview nobody reads is not a review.
+#
+# The apply runs when the change merges to main, as the stack's apply role, in the `infrastructure`
+# environment. Setting an environment up — the bootstrap, the first `pulumi up`, its secrets and
+# the first deploy — runs once from an operator's machine, because the apply role is one of the
+# things that first apply creates. Every apply after it runs here (Pulumi standards MUST-9); one
+# from a laptop is the exception that rule forbids.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. Nothing here may contain a cookiecutter variable; the two
+# tokens `__COMPONENT__` and `__COMPONENT_VAR__` are substituted as plain text when the
+# post-generation hook installs it as `.github/workflows/__COMPONENT__-infra.yml`, and anything
+# project-specific comes from a repository variable, prefixed with the component's name.
+name: __COMPONENT__ Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - '__COMPONENT__/infra/**'
+      - '.github/workflows/__COMPONENT__-infra.yml'
+      # The contract test reads the component's deploy workflow: a renamed `vars.` there is a test
+      # failure here, and a pull request that renames one has to run it.
+      - '.github/workflows/__COMPONENT__-cd.yml'
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/infra/**'
+      - '.github/workflows/__COMPONENT__-infra.yml'
+      - '.github/workflows/__COMPONENT__-cd.yml'
+
+# A pull request's checks cancel in progress, because only its latest commit matters. A push to
+# main queues instead: cancelling it could stop the apply halfway through `pulumi up`, leaving
+# resources half-changed and the stack locked.
+concurrency:
+  group: __COMPONENT__-infra-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  id-token: write        # the OIDC token the preview and apply roles are assumed with
+  pull-requests: write   # the preview comments its diff
+
+defaults:
+  run:
+    working-directory: __COMPONENT__
+
+jobs:
+  static:
+    name: Lint, types and component tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: __COMPONENT__/infra/pulumi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: __COMPONENT__/infra/pulumi/uv.lock
+      - run: uv sync --frozen        # fails loudly on a stale lockfile
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy .
+      - run: uv run pytest -q
+
+  preview:
+    name: Preview
+    runs-on: ubuntu-latest
+    needs: [static]
+    defaults:
+      run:
+        working-directory: __COMPONENT__/infra/pulumi
+    # Inert until the stack has been applied once and sync-github.sh has set the variables. A
+    # preview against a stack that does not exist fails on state, not on the change under review.
+    #
+    # Pull requests only, and from this repository only: the preview role trusts
+    # `repo:<owner>/<repo>:pull_request`, and GitHub gives a pull request from a fork no OIDC token
+    # at all, so a stranger's branch can never reach it.
+    if: github.event_name == 'pull_request' && vars.__COMPONENT_VAR___AWS_PREVIEW_ROLE_ARN != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: __COMPONENT__/infra/pulumi/uv.lock
+      - run: uv sync --frozen
+
+      # Keyless, and the preview role rather than the deploy role: read-only across the account,
+      # plus this project's state and its lock file. Pin this to a digest rather than `@v4` before
+      # you rely on the pipeline: the house rule is a released major at minimum, and a pinned digest
+      # for anything that handles credentials.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.__COMPONENT_VAR___AWS_PREVIEW_ROLE_ARN }}
+          aws-region: ${{ vars.__COMPONENT_VAR___AWS_REGION }}
+
+      # No login step: __COMPONENT__/infra/pulumi/Pulumi.yaml names the S3 backend, and the stack's secrets
+      # provider is the KMS key the preview role may decrypt with.
+      - uses: pulumi/actions@v6
+        with:
+          command: preview
+          stack-name: dev
+          work-dir: __COMPONENT__/infra/pulumi
+          # Load-bearing, not hygiene. CD updates the Express service's image out of band; without
+          # a refresh Pulumi's state still holds the previous image, `ignore_changes` has nothing to
+          # preserve, and the preview proposes rolling the service back to it.
+          refresh: true
+          # A destructive change must be visible in review, not discovered in apply output.
+          comment-on-pr: true
+          diff: true
+
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    needs: [static]
+    defaults:
+      run:
+        working-directory: __COMPONENT__/infra/pulumi
+    # Main only, and inert until sync-github.sh has set the apply role's variable — which it does
+    # once the environment has been set up from a machine. The `if` keeps the job off other
+    # branches; the role's trust policy is the guard, and it admits a token from the
+    # `infrastructure` environment of this repository and nothing else.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.__COMPONENT_VAR___AWS_APPLY_ROLE_ARN != ''
+    # The gate on every apply. Give the environment protection rules in the repository settings —
+    # required reviewers, and deployment branches limited to main. The role can change anything in
+    # the account, so an unprotected environment is an apply nobody approved.
+    environment: infrastructure
+    # Applies queue, one at a time, and are never cancelled: a `pulumi up` stopped halfway leaves
+    # resources half-changed and the stack locked.
+    concurrency:
+      group: __COMPONENT__-infra-apply
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write    # the OIDC token the apply role is assumed with
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: __COMPONENT__/infra/pulumi/uv.lock
+      - run: uv sync --frozen
+
+      # Keyless, and the apply role: the only CI identity that can change the stack. Pin this to a
+      # digest rather than `@v4` before you rely on the pipeline: the house rule is a released major
+      # at minimum, and a pinned digest for anything that handles credentials.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.__COMPONENT_VAR___AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.__COMPONENT_VAR___AWS_REGION }}
+
+      # The same stack the preview showed the pull request, applied as it merged.
+      - uses: pulumi/actions@v6
+        with:
+          command: up
+          stack-name: dev
+          work-dir: __COMPONENT__/infra/pulumi
+          # Load-bearing, as for the preview: without it the apply rolls the service back to the
+          # image Pulumi's state last saw, undoing CD's last deploy.
+          refresh: true
+          diff: true

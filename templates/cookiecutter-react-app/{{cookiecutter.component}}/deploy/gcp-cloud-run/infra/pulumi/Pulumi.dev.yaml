@@ -1,0 +1,38 @@
+# The dev stack. Cheapest viable configuration at every layer.
+#
+# `pulumi stack init dev --secrets-provider=gcpkms://...` records `secretsprovider` and
+# `encryptedkey` in this file alongside the configuration below. The bootstrap script prints the
+# exact command with the key it created. Every key below is read in one place: src/config.ts.
+config:
+  {{ cookiecutter.__name }}:project: {{ cookiecutter.gcp_project_id }}
+  {{ cookiecutter.__name }}:region: {{ cookiecutter.gcp_region }}
+  # The STACK's environment. All it does is name resources — `{{ cookiecutter.__name }}-dev`, and
+  # every account and repository with the same suffix.
+  {{ cookiecutter.__name }}:environment: dev
+  # Every resource name is built from this — the project's slug and this component's name — so it
+  # is not decoration: changing it renames the Cloud Run service, the registry repository and the
+  # service accounts.
+  {{ cookiecutter.__name }}:slug: {{ cookiecutter.__name }}
+  # Workload Identity Federation is scoped to exactly this repository. Anything else here means
+  # any repository on GitHub can assume the CI identities.
+  {{ cookiecutter.__name }}:githubRepository: {{ cookiecutter.github_repository }}
+  # Scaling to zero is the single biggest cost lever: an idle site costs nothing. A cold start for
+  # nginx is well under a second, so there is rarely a reason to raise the minimum.
+  {{ cookiecutter.__name }}:minInstances: "0"
+  {{ cookiecutter.__name }}:maxInstances: "2"
+  # The backend's own address — https://<its host>, no trailing slash: its stack's service_url. Set it
+  # with
+  #   pulumi config set --plaintext apiUrl https://<the backend's host>
+  # and run `just infra-up`. `just infra-first-deploy` refuses to build without it.
+  {{ cookiecutter.__name }}:apiUrl: ""
+  # Whether this site serves that API on its own origin, under /api/ and /health/. `true`: nginx in
+  # the site's container proxies those paths to apiUrl (its API_UPSTREAM_HOST), and the bundle calls
+  # the page's own origin, so the app and the API are one site{% if cookiecutter.include_auth == "yes" %} and the backend's SameSite=Strict refresh cookie survives a reload{% endif %}.
+  # `false`: the bundle calls apiUrl directly — for a site and an API on one domain you own. Either
+  # way the stack exports what the bundle is built with as api_url, and `just infra-sync-github`
+  # copies it into {{ cookiecutter.__component_var }}_API_URL.
+  {{ cookiecutter.__name }}:apiSameOrigin: "true"
+  # The image the Cloud Run service is created on. Empty: the stack creates everything but the
+  # service. `just infra-first-deploy` builds and pushes the real image, sets this to it and applies;
+  # from then on CD owns the image and the service ignores changes to this value. Never set by hand.
+  {{ cookiecutter.__name }}:serviceImage: ""

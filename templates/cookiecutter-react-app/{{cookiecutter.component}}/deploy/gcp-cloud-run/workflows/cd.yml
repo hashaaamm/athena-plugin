@@ -1,0 +1,172 @@
+# Build, push and deploy the nginx image to Cloud Run.
+#
+# Inert until configured: the job is gated on `vars.__COMPONENT_VAR___DEPLOY_SA`, so a freshly
+# generated component has a reviewed deploy path that cannot fire by accident. Run
+# `just infra-sync-github` and it starts working — no edit to this file required.
+#
+#   __COMPONENT_VAR___WIF_PROVIDER       projects/…/workloadIdentityPools/…/providers/github
+#   __COMPONENT_VAR___DEPLOY_SA          <name>-deploy-<env>@<project>.iam.gserviceaccount.com
+#   __COMPONENT_VAR___GCP_REGION         europe-west1
+#   __COMPONENT_VAR___IMAGE_REPO         europe-west1-docker.pkg.dev/<project>/<repo>
+#   __COMPONENT_VAR___CLOUD_RUN_SERVICE  the Cloud Run service serving the bundle
+#   __COMPONENT_VAR___SITE_URL           https://<service>-<hash>.<region>.run.app, for the smoke test
+#   __COMPONENT_VAR___API_URL            where the bundle calls the API — compiled INTO it: `/`,
+#                                        the site's own origin, while its nginx proxies the API;
+#                                        else the backend's own address
+#
+# Every one is a stack output — the API's is the stack's `api_url`, derived from its `apiUrl` and
+# `apiSameOrigin` — copied in by `infra/scripts/sync-github.sh`, so the names on both sides cannot drift;
+# infra/pulumi/tests/contract.test.ts asserts the match. Each is prefixed with the component's name,
+# because one repository holds several components and each has a deploy account of its own.
+#
+# The service already exists when this first runs: `just infra-first-deploy` built and pushed the
+# first image from a laptop and created the service on it. From then on this workflow owns the image.
+#
+# **The ordering that makes this correct.** Vite inlines VITE_* at build time, so the API origin is
+# compiled into the JavaScript and cannot be changed afterwards by any amount of Cloud Run
+# configuration. A bundle built without one would call the local development address, deploy
+# cleanly, serve a page and answer nothing — so the job refuses to build instead.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json), to
+# .github/workflows/__COMPONENT__-cd.yml at the repository root. The only templating here is two
+# plain tokens the post-generation hook replaces; nothing here may contain a cookiecutter variable.
+name: __COMPONENT__ CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/**'
+      - '.github/workflows/__COMPONENT__-cd.yml'
+  # Also the way to rebuild after the API's address changes: nothing in the repository has to change
+  # for the deployed bundle to be wrong.
+  workflow_dispatch:
+
+concurrency:
+  group: __COMPONENT__-cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # required for Workload Identity Federation
+
+defaults:
+  run:
+    working-directory: __COMPONENT__
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    if: vars.__COMPONENT_VAR___DEPLOY_SA != ''
+    # Give this environment protection rules in the repository settings — required reviewers, or a
+    # branch restriction to main. They are the gate on a deploy.
+    environment: production
+    env:
+      # The same name `just infra-first-deploy` pushes: <image_repo>/<service>:<commit>.
+      IMAGE: ${{ vars.__COMPONENT_VAR___IMAGE_REPO }}/${{ vars.__COMPONENT_VAR___CLOUD_RUN_SERVICE }}:${{ github.sha }}
+    steps:
+      # First, before any step that runs in the component's folder: the folder does not exist
+      # until the repository is on disk.
+      - uses: actions/checkout@v4
+
+      # Resolved before anything is built, because the alternative is discovering it from a browser
+      # console after the deploy reported success. Read through `env:` rather than interpolated
+      # into the script: a repository variable is untrusted input to a shell otherwise.
+      - name: Resolve the API origin
+        id: origin
+        env:
+          API_URL: ${{ vars.__COMPONENT_VAR___API_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$API_URL" ]; then
+            echo "::error::__COMPONENT_VAR___API_URL is not set, so this build would compile the local" \
+                 "development address into the bundle. Set the stack's apiUrl and run" \
+                 "just infra-sync-github (infra/README.md), then re-run this workflow."
+            exit 1
+          fi
+          echo "url=$API_URL" >> "$GITHUB_OUTPUT"
+          if [ "$API_URL" = "/" ]; then
+            echo "the bundle will call its own origin, where the site's nginx proxies the API"
+          else
+            echo "the bundle will call $API_URL"
+          fi
+
+      # Keyless: a downloaded service-account JSON key is a long-lived credential in a file, and
+      # the handbook bans them outright.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v2` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.__COMPONENT_VAR___WIF_PROVIDER }}
+          service_account: ${{ vars.__COMPONENT_VAR___DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate to Artifact Registry
+        env:
+          GCP_REGION: ${{ vars.__COMPONENT_VAR___GCP_REGION }}
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # An action does not read `defaults.run`, so the context and the Dockerfile are named
+          # from the repository root.
+          context: __COMPONENT__
+          file: __COMPONENT__/docker/Dockerfile.prod
+          target: production
+          platforms: linux/amd64
+          push: true
+          # An immutable :sha tag, never :latest. A rollback is then a known image rather than a
+          # guess about what :latest pointed at last Tuesday.
+          tags: ${{ env.IMAGE }}
+          # A build arg and not an environment variable, because it is inlined into the JavaScript
+          # rather than read at runtime. The same value in `docker run` would arrive too late.
+          build-args: VITE_API_URL=${{ steps.origin.outputs.url }}
+          cache-from: type=gha,scope=__COMPONENT__
+          cache-to: type=gha,mode=max,scope=__COMPONENT__
+
+      # `update`, not `deploy`. The shape of the service — its account, scaling, the probe —
+      # belongs to infrastructure-as-code. This pipeline owns exactly one field: the image. Two
+      # tools writing the same resource is how a plan fills up with phantom drift.
+      - name: Deploy
+        env:
+          SERVICE: ${{ vars.__COMPONENT_VAR___CLOUD_RUN_SERVICE }}
+          GCP_REGION: ${{ vars.__COMPONENT_VAR___GCP_REGION }}
+        run: |
+          set -euo pipefail
+          gcloud run services update "$SERVICE" --image "$IMAGE" --region "$GCP_REGION" --quiet
+
+      - name: Smoke test
+        env:
+          SITE_URL: ${{ vars.__COMPONENT_VAR___SITE_URL }}
+          API_URL: ${{ steps.origin.outputs.url }}
+        run: |
+          set -euo pipefail
+          # The index: nginx started and the bundle is on disk.
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_URL/")
+          [ "$code" = "200" ] || { echo "::error::$SITE_URL/ answered $code"; exit 1; }
+
+          # A route the server has no file for. It must still answer 200 with index.html — that is
+          # the SPA fallback in docker/default.conf.template, and without it every hard refresh on
+          # a real route is a 404 that only the person who bookmarked it ever sees.
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_URL/some/deep/route")
+          [ "$code" = "200" ] || { echo "::error::$SITE_URL/some/deep/route answered $code"; exit 1; }
+
+          # The API through this site's nginx, when the bundle calls it there. JSON and not the
+          # index: a path the proxy missed is the app's shell with a 200, which a status check
+          # alone would pass.
+          if [ "$API_URL" = "/" ]; then
+            answer=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "$SITE_URL/health/live")
+            case "$answer" in
+              "200 application/json"*) echo "the API answers on $SITE_URL/health/live" ;;
+              *) echo "::error::$SITE_URL/health/live answered '$answer', not the API's 200 JSON"; exit 1 ;;
+            esac
+          fi
+          echo "serving: $SITE_URL"

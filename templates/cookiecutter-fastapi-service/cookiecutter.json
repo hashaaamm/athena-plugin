@@ -1,6 +1,7 @@
 {
   "project_name": "Example Service",
   "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '-').replace('_', '-') }}",
+  "component": "api",
   "description": "A FastAPI service built to the Engineering Athena handbook.",
   "author": "Your Name",
   "python_version": "3.12",
@@ -12,11 +13,14 @@
   "github_repository": "your-org/{{ cookiecutter.project_slug }}",
   "use_postgres": ["yes", "no"],
   "use_sentry": ["yes", "no"],
+  "__component_var": "{{ cookiecutter.component.upper().replace('-', '_') }}",
+  "__name": "{{ cookiecutter.project_slug }}-{{ cookiecutter.component }}",
   "_copy_without_render": [
     ".github/workflows/*",
     "deploy/*/workflows/*"
   ],
   "__prompts__": {
+    "component": "Component folder, and the prefix of everything it creates outside it (lowercase, e.g. api)",
     "deploy_target": {
       "__prompt__": "Where it deploys",
       "gcp-cloud-run": "GCP: Cloud Run + Cloud SQL",

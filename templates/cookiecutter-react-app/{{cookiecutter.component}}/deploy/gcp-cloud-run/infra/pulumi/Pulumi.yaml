@@ -1,0 +1,23 @@
+name: {{ cookiecutter.__name }}
+# TypeScript, the application's own language (ADR-0020). Pulumi runs index.ts through the ts-node
+# and TypeScript in this directory's node_modules, so `pnpm install` here comes before any pulumi
+# command — infra/README.md.
+runtime:
+  name: nodejs
+  options:
+    packagemanager: pnpm
+description: Infrastructure for {{ cookiecutter.project_name }}.
+
+# Self-managed state in GCS, created by infra/bootstrap/state-bucket.sh before the first `up`.
+# Not Pulumi Cloud: a bucket in the same project is one fewer vendor relationship, and the house
+# rule is that state lives in a bucket the program does not create, versioned and KMS-encrypted.
+# Named for the project alone, so a site and the service it calls share it when they share a
+# project; each Pulumi project gets its own directory under .pulumi/stacks/.
+backend:
+  url: gs://{{ cookiecutter.gcp_project_id }}-pulumi-state
+
+config:
+  # One explicit provider, configured in src/stack.ts. A default provider would pick up ambient
+  # gcloud configuration and make two machines plan differently.
+  pulumi:disable-default-providers:
+    value: ["gcp"]

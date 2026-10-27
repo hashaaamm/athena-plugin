@@ -1,0 +1,88 @@
+# Infrastructure recipes. The root justfile delegates `infra-*` here; `just` in this directory runs
+# them directly.
+#
+# Unlike backend/, these run on the host, not in a container. A Pulumi Go program is compiled by
+# the Go toolchain on the machine running `pulumi`, and `pulumi`, `aws` and `gh` all act with your
+# own credentials — mounting those into a container would be more machinery and more places for a
+# credential to land. So `go`, `pulumi` and `golangci-lint` are host prerequisites for this
+# directory and nothing else: infra/README.md lists them, and `_require` says which one is missing.
+{% raw %}
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+# Show available recipes
+default:
+    @just --list
+
+# Resolve go.sum. It is not templated, so this is the first command after generating — commit what it writes
+lock: (_require "go")
+    cd pulumi && go mod tidy
+
+# Unit-test the stack against mocks. No cloud credentials needed.
+test *ARGS: (_require "go")
+    cd pulumi && go test ./... {{ARGS}}
+
+# Vet and lint the stack
+lint: (_require "go") (_require "golangci-lint")
+    cd pulumi && go vet ./... && golangci-lint run ./...
+
+# --refresh on preview, up and destroy is load-bearing, not hygiene. CD updates the Express
+# service's image out of band; without a refresh, Pulumi's state still holds the previous image,
+# ignoreChanges has nothing to preserve, and the next apply rolls the service back to it.
+
+# Show what `pulumi up` would change
+preview STACK="dev" *FLAGS: (_require "go") (_require "pulumi")
+    cd pulumi && pulumi preview --stack {{STACK}} --refresh --diff {{FLAGS}}
+
+# `pulumi up` asks for confirmation and refuses to run at all when nothing can answer:
+# "--yes must be passed in to proceed when running in non-interactive mode". That is the right
+# behaviour for the one command here that creates billable resources, so this recipe does not pass
+# --yes for you; it passes your flags through instead, and a pipeline or an agent types the word.
+# The stack name is positional, so the flag has to come after one.
+#
+# Creates real, billable resources — read the preview first. Unattended: `just up dev --yes`
+up STACK="dev" *FLAGS: (_require "go") (_require "pulumi")
+    cd pulumi && pulumi up --stack {{STACK}} --refresh {{FLAGS}}
+
+{% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
+# The signing key is never in the program, its configuration or its state (Pulumi standards MUST-3,
+# ADR-0023). The stack creates its secret empty; this generates the key, pipes it into Secrets
+# Manager, and records the VersionId for the stack to pin. The database needs nothing here: RDS
+# keeps the master password itself. Run it after the first `up`, then `up` again. Prints no value
+# and writes no file.
+
+# Generate the token signing key. `--rotate` replaces it, signing everyone out
+secrets STACK="dev" *FLAGS: (_require "pulumi") (_require "aws") (_require "openssl")
+    ./scripts/secrets.sh {{STACK}} {{FLAGS}}
+{% endraw %}{% endif %}{% raw %}
+# The first image is built here, on your machine, and the service is created on it — there is no
+# placeholder image (ADR-0024). `up` creates everything but the service; this builds the production
+# image for linux/amd64 from the committed tree, pushes it, records it as `serviceImage`, applies
+# the stack (which prompts, as `up` does), runs the migrations exactly as CD does, waits for the
+# service and smoke-tests it. CD owns every image after this one. Refuses until secrets_ready.
+
+# Build and push the real image, create the service on it, migrate, smoke-test. Unattended: `just first-deploy dev --yes`
+first-deploy STACK="dev" *FLAGS: (_require "go") (_require "pulumi") (_require "aws") (_require "docker") (_require "git") (_require "curl") (_require "jq")
+    ./scripts/first-deploy.sh {{STACK}} {{FLAGS}}
+
+# Copy stack outputs into GitHub repository variables, which un-gates CD. Refuses until secrets_ready, and until first-deploy
+sync-github STACK="dev": (_require "pulumi") (_require "gh")
+    ./scripts/sync-github.sh {{STACK}}
+
+# Destroying is two commands, not one, and they are not interchangeable. `pulumi destroy` removes
+# what the stack created. It cannot remove the bucket its own state lives in, the KMS key that
+# encrypts that state, or the account's GitHub OIDC provider, because the stack never created
+# them — the bootstrap script did. Run them in this order; the teardown script enforces it rather
+# than trusting you to remember.
+
+# Destroy everything the stack created. Prompts, for the same reason `up` does.
+destroy STACK="dev" *FLAGS: (_require "go") (_require "pulumi")
+    cd pulumi && pulumi destroy --stack {{STACK}} --refresh {{FLAGS}}
+
+# Delete the state bucket, KMS key and OIDC provider, which `destroy` cannot. Refuses unless every stack is empty
+teardown: (_require "pulumi") (_require "aws")
+    ./bootstrap/teardown.sh
+
+[private]
+_require TOOL:
+    @command -v {{TOOL}} >/dev/null || { echo "{{TOOL}} is not installed. infra/ recipes run on the host — see infra/README.md." >&2; exit 1; }
+{% endraw %}

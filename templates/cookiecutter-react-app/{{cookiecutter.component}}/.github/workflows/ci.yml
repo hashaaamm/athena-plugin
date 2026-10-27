@@ -1,0 +1,126 @@
+# The application's gate. Fastest first, so a lint error fails in thirty seconds rather than after
+# the build. The same for every deploy target: what deploys, and where, is the CD workflow's business.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json), to
+# .github/workflows/__COMPONENT__-ci.yml at the repository root. GitHub Actions' ${{ ... }} and
+# Jinja's {{ ... }} are the same two braces, so rendering this file would strip every expression in
+# it. The only templating here is two plain tokens the post-generation hook replaces: the component's
+# folder and the prefix of its repository variables. Anything else project-specific comes from a
+# repository variable.
+name: __COMPONENT__ CI
+
+on:
+  pull_request:
+    # The component's folder, and this file. Another component's change runs its own workflows,
+    # not these.
+    paths:
+      - '__COMPONENT__/**'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/**'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+
+concurrency:
+  group: __COMPONENT__-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# `defaults.run` reaches `run:` steps only. An action takes its paths from the repository root, which
+# is why every pnpm and Node action below names the component's files explicitly.
+defaults:
+  run:
+    working-directory: __COMPONENT__
+
+jobs:
+  static:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Reads the pinned version from package.json's `packageManager` field, so CI and the
+      # container in docker-compose.yml resolve dependencies identically.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: __COMPONENT__/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: __COMPONENT__/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile   # fails loudly on a stale lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: [static]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: __COMPONENT__/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: __COMPONENT__/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  build:
+    name: Production bundle
+    runs-on: ubuntu-latest
+    needs: [static]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: __COMPONENT__/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: __COMPONENT__/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # A build that only ever runs at deploy time is a build that breaks at deploy time.
+      - run: pnpm build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    needs: [static]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: __COMPONENT__/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: __COMPONENT__/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # full history, not just the diff
+      # The gitleaks CLI from its own image, not gitleaks-action: the action needs a paid licence
+      # on an organisation's repositories. `git` mode reads every commit that touched this
+      # component, so a key added and then deleted is still found; a scan of the files on disk would
+      # pass it. The component's own config, because that is where its one allowlist lives. A
+      # finding exits non-zero and fails the job.
+      - name: gitleaks
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git --log-opts="-- __COMPONENT__" --config __COMPONENT__/.gitleaks.toml --redact --no-banner

@@ -1,0 +1,28 @@
+# Fast, deterministic checks only. Type checking and tests belong in `just check` and CI —
+# a slow hook gets bypassed with --no-verify, and then so do the useful ones.
+# Ask Athena for the local development and command runner rules.
+#
+# This file is the component's, so pre-commit does not find it on its own: it reads the repository
+# root. Install it from there, naming this file — pre-commit records the path in the hook it writes:
+#
+#   pre-commit install --config {{ cookiecutter.component }}/.pre-commit-config.yaml
+#
+# Paths below are relative to the repository root, which is where pre-commit runs every hook. A
+# repository has one pre-commit hook, so with several components it is one of their files, or a
+# root file that lists every component's hooks.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^{{ cookiecutter.component }}/backend/
+      - id: ruff-format
+        files: ^{{ cookiecutter.component }}/backend/
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        # The component's config: default rules, plus the two Pulumi stack-file lines it allowlists.
+        args: [--config, {{ cookiecutter.component }}/.gitleaks.toml]

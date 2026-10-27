@@ -2,14 +2,17 @@
 
 > **This is a published copy.** It is generated from Athena's source and rewritten on every publish, so an edit made here is lost at the next one. Report a problem as an issue on the repository you found it in.
 
-A production-ready **FastAPI service in a monorepo-shaped repository**. It generates a repo whose
-backend already satisfies the handbook's **MUST**s — layering, typed settings, async SQLAlchemy,
-Alembic, multi-stage image, Cloud Run health endpoints, CI and an inert-until-configured CD
-pipeline.
+A production-ready **FastAPI service, generated as a component**: one folder of a repository,
+holding the service, its local stack and its infrastructure, with its workflows installed at the
+repository root under its own name (ADR-0024). The backend already satisfies the handbook's
+**MUST**s — layering, typed settings, async SQLAlchemy, Alembic, multi-stage image, Cloud Run health
+endpoints, CI and an inert-until-configured CD pipeline.
 
-**It is backend-only.** A browser client is a repository of its own, generated from
-[`cookiecutter-react-app`](../cookiecutter-react-app), with its own stack and its own CD (ADR-0022),
-and pointed at this API by two stack settings — see [A browser client](#a-browser-client).
+**It is backend-only.** A browser client is another component, generated from
+[`cookiecutter-react-app`](../cookiecutter-react-app) into the same repository beside this one, with
+its own stack and its own CD, and pointed at this API by two stack settings — see
+[A browser client](#a-browser-client). A single-service repository is a repository with one
+component.
 
 **With a database, the endpoints it ships are the two health probes and six real authentication
 endpoints** — register, login, refresh, logout, me, change password. They are the worked example of
@@ -28,45 +31,59 @@ expensive to find there and are pre-fixed here.
 
 ## Use it
 
+Generate into the repository's root with `-o`; the component lands in `<repo-root>/<component>/`:
+
 ```bash
-uvx cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-fastapi-service   # interactive
+uvx cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-fastapi-service \
+  -o .                                                                 # interactive
 uvx cookiecutter --no-input gh:hashaaamm/athena-plugin --directory templates/cookiecutter-fastapi-service \
-  project_name="Billing API"
+  -o . component=api project_name="Billing API"
 
 # The same service, deploying to AWS instead: ECS Express Mode, and RDS when it has a database
 uvx cookiecutter --no-input gh:hashaaamm/athena-plugin --directory templates/cookiecutter-fastapi-service \
-  project_name="Billing API" deploy_target=aws-ecs-express aws_account_id=123456789012 aws_region=eu-west-1
+  -o . component=api project_name="Billing API" deploy_target=aws-ecs-express \
+  aws_account_id=123456789012 aws_region=eu-west-1
 ```
 
-Then, in the generated repository:
+Then, in the component's folder:
 
 ```bash
-cd <slug>/backend && uv lock && cd ..   # resolve the lockfile the images build from
+cd api
+(cd backend && uv lock)                 # resolve the lockfile the images build from
 just dev                                # http://localhost:8000/docs
 just check                              # everything CI runs
 
-cd infra/pulumi && uv lock && cd ../..  # the stack has its own lockfile, for the same reason
+(cd infra/pulumi && uv lock)            # the stack has its own lockfile, for the same reason
 just infra-test                         # the component tests; no cloud credentials needed
 ```
 
-### Into a repository that already exists
+Or from the repository root, every recipe with the component's name in front: `just api check`.
 
-Cookiecutter writes a directory and **fails if that directory is already there** — including when
-"already there" means a repository somebody created on GitHub five minutes ago that holds a
-`README.md`, a `LICENSE` and an agent's dotfiles. There is no flag for it; generate beside the
-target and move the tree in.
+### What generation writes, and where
 
-```bash
-uvx cookiecutter --no-input -o /tmp/gen templates/cookiecutter-fastapi-service project_name="Billing API"
-rsync -a --exclude .git /tmp/gen/billing-api/ ./billing-api-repo/     # trailing slashes matter
-```
+| Where | What | Why it is there |
+| --- | --- | --- |
+| `<component>/` | the service, `infra/`, `justfile`, `docker-compose*.yml`, `.env.example`, `.gitignore`, `.gitleaks.toml`, `.pre-commit-config.yaml`, `.editorconfig`, `README.md`, `AGENTS.md` | Everything the component is lives in its folder |
+| `.github/workflows/<component>-ci.yml`, `-cd.yml`, `-infra.yml` | the component's workflows, filtered to `<component>/**` | GitHub reads workflows at the repository root and nowhere else |
+| `justfile` | created with a header if missing, then `mod <component>` appended | `just <component> <recipe>` from the root runs the component's recipe in its folder; needs just 1.31 or later |
+| `AGENTS.md` | created if missing, then a line pointing at `<component>/AGENTS.md` | The root agent file is a map of components |
 
-That is the whole procedure **only when the target is effectively empty** — nothing at the root
-that the template also writes. The moment it holds a `justfile`, a `docker-compose.yml`, a
-`.github/workflows/` or a second service, this becomes a merge with collisions to reconcile, and
-`rsync` will happily overwrite the side that was there first. Ask Athena for **merging a generated
-service into a repository that already has code**; it is a step in the FastAPI guide, and the
-companion knowledge page lists what collides and which collision is silent.
+Everything the component creates in a shared namespace carries its name: the compose project
+(`<project_slug>-<component>`), every cloud resource and the Pulumi project (the same
+`<project_slug>-<component>`), and every repository variable and secret its workflows read
+(`<COMPONENT>_…`, e.g. `API_AWS_DEPLOY_ROLE_ARN`). A second component generated into the same root —
+another FastAPI service as `component=api2`, the Gin template, a React app as `component=web` —
+collides with none of it and needs no hand edit.
+
+**Generating the same component twice is refused.** Cookiecutter refuses when `<component>/`
+exists, and the post-generation hook refuses — before it writes anything outside the folder — when
+any of the component's workflow files already exists, naming them and suggesting another
+`component`. A refused generation leaves the repository as it was.
+
+**Into a repository that already exists** is the same command: `-o` at its root. The component's
+folder is new, the workflows carry its name, and the root `justfile` and `AGENTS.md` are appended to
+rather than replaced. A root `justfile` that already has recipes keeps them; `mod <component>`
+only adds the module.
 
 The lockfile is **not** templated. A committed `uv.lock` would be stale on the day it was written
 and would pin whatever versions existed when this template was last touched; resolving once at
@@ -78,11 +95,12 @@ lockfile fails the build loudly rather than silently resolving something new.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `project_name` | `Example Service` | Human name. Used in the OpenAPI title and the READMEs. |
-| `project_slug` | derived | Directory name, package name, the deployed service's name, compose project name. |
+| `project_slug` | derived | The Python package's name, the refresh cookie's prefix and the JWT issuer and audience; with `component`, the base of every name below. |
+| `component` | `api` | The component's folder, its workflow filenames (`<component>-cd.yml`), its `just` module and, upper-cased with `-` as `_`, the prefix of every repository variable it reads (`API_…`). Refused unless it matches `^[a-z][a-z0-9-]{0,19}$`. `<project_slug>-<component>` is the base of every cloud resource name, the Pulumi project and the compose project. |
 | `description` | … | One line. Lands in `pyproject.toml` and the OpenAPI description. |
 | `author` | `Your Name` | Attribution. |
 | `python_version` | `3.12` | Base image tag, `requires-python`, Ruff and mypy targets, `.python-version`. |
-| `deploy_target` | `gcp-cloud-run` | Where the service deploys, and so which `infra/` and which deploy workflows the repository gets. `gcp-cloud-run` is Cloud Run, Cloud SQL and Artifact Registry, with state in GCS. `aws-ecs-express` is ECS Express Mode on Fargate, RDS for PostgreSQL and ECR, with state in S3 under AWS KMS (ADR-0021). Both are complete implementations of the same interface — the same `just infra-*` recipes, the same order of operations in `infra/README.md`, deploy pipelines that are inert until `just infra-sync-github` has run — so nothing outside `infra/` and `.github/workflows/` differs but the words. The unchosen target is deleted at generation. |
+| `deploy_target` | `gcp-cloud-run` | Where the service deploys, and so which `infra/` and which deploy workflows the component gets. `gcp-cloud-run` is Cloud Run, Cloud SQL and Artifact Registry, with state in GCS. `aws-ecs-express` is ECS Express Mode on Fargate, RDS for PostgreSQL and ECR, with state in S3 under AWS KMS (ADR-0021). Both are complete implementations of the same interface — the same `just infra-*` recipes, the same order of operations in `infra/README.md`, deploy pipelines that are inert until `just infra-sync-github` has run — so nothing outside `infra/` and its workflows differs but the words. The unchosen target is deleted at generation. |
 | `gcp_project_id` | `your-gcp-project` | `gcp-cloud-run` only. The GCP project the Pulumi stack targets: `infra/pulumi/Pulumi.dev.yaml`, the state-bucket URL in `Pulumi.yaml`, and the bootstrap script's default. Not in any workflow. |
 | `gcp_region` | `europe-west1` | `gcp-cloud-run` only. Same three places. Cloud Run, Cloud SQL and Artifact Registry all live here. |
 | `aws_account_id` | `123456789012` | `aws-ecs-express` only, and refused before generation unless it is 12 digits. The account the provider is allowed to touch (`allowed_account_ids`, so a shell holding another account's session fails before it plans anything), the state bucket `pulumi-state-<account>-<region>` in `Pulumi.yaml`, and the account the bootstrap script checks it is talking to. Not in any workflow. |
@@ -91,36 +109,37 @@ lockfile fails the build loudly rather than silently resolving something new.
 | `use_postgres` | `yes` | `no` drops Alembic, the ORM base, the database from Compose, readiness' database check **and the whole authentication example**, leaving the layer packages and the health endpoints. `yes` is the variant with two tables, two migrations and six working endpoints over them. |
 | `use_sentry` | `yes` | `no` drops the SDK and `app/core/observability.py`. `yes` wires it with an **empty DSN by default** — local development reports nothing, by rule. |
 
-## What is at the root, and what is in `backend/`
+## What is in the component's folder, and what is in `backend/`
 
-The rule applied throughout: **anything that orchestrates more than one component, or that a
-developer runs from the repository root, is root. Anything specific to the Python service is
-`backend/`.**
+The rule applied throughout: **anything that orchestrates the component — its stack, its gate, its
+infrastructure — is in the component's folder. Anything specific to the Python service is
+`backend/`.** Outside the folder there is only what generation writes at the repository root, listed
+above.
 
-| At the root | Why |
+| In the component's folder | Why |
 | --- | --- |
-| `justfile` | It is the entry point an engineer and an agent both reach for. It owns the stack (`dev`, `down`, `logs`) and delegates the rest to `backend/justfile`. Another component adds a delegation line, not a new command vocabulary. |
-| `docker-compose.yml` / `.ci.yml` | They describe a *stack*: database plus backend. A compose file inside `backend/` cannot express "the backend waits for the database", and two compose files cannot share one network without ceremony. |
-| `.github/workflows/` | One repository has one Actions surface. Per-component isolation is achieved with `paths:` filters inside the workflows, not by hiding workflow files in subdirectories — GitHub only reads `.github/workflows/` at the root anyway. |
-| `.env.example` | The same `POSTGRES_*` values configure the `db` container *and* the backend that connects to it. Compose reads `.env` from its own directory, which is the root. |
-| `infra/` | It describes where the *repository* runs, not how the Python service is built. It has its own `pyproject.toml`, its own lockfile and its own workflow, and it would be wrong inside `backend/` for the same reason `docker-compose.yml` is. |
-| `.gitignore`, `.editorconfig`, `.pre-commit-config.yaml`, `.gitleaks.toml` | Repository-wide by definition. Pre-commit hooks are scoped with `files: ^backend/`; gitleaks reads its config from the repository root and nowhere else, in CI and in the hook alike. |
-| `README.md`, `AGENTS.md` | The root `AGENTS.md` is a **map**; each subtree carries its own rules. the project structure rules MUST exactly this for monorepos — one root file cannot carry two stacks and stay under 100 lines. |
+| `justfile` | It is the entry point an engineer and an agent both reach for. It owns the stack (`dev`, `down`, `logs`) and the infrastructure, and delegates the rest to `backend/justfile`. The root justfile mounts it as a module. |
+| `docker-compose.yml` / `.ci.yml` | They describe a *stack*: database plus backend. A compose file inside `backend/` cannot express "the backend waits for the database", and two compose files cannot share one network without ceremony. The compose project is named `<project_slug>-<component>`, so two components' containers, networks and volumes never meet; the host ports are overridable in `.env`. |
+| `.env.example` | The same `POSTGRES_*` values configure the `db` container *and* the backend that connects to it, and the host ports live here. Compose reads `.env` from its own directory. |
+| `infra/` | It describes where the component runs, not how the Python service is built. It has its own `pyproject.toml`, its own lockfile and its own workflow, and it would be wrong inside `backend/` for the same reason `docker-compose.yml` is. |
+| `.gitignore`, `.editorconfig`, `.pre-commit-config.yaml`, `.gitleaks.toml` | The component's. The secret scan in CI and the pre-commit hook both name `<component>/.gitleaks.toml` with `--config`; the pre-commit config is installed with `pre-commit install --config <component>/.pre-commit-config.yaml`, because pre-commit only finds a root one on its own. |
+| `README.md`, `AGENTS.md` | The component's `AGENTS.md` is a **map** of the component; `backend/` carries its own rules. The root `AGENTS.md` is a map of components. |
 
 | In `backend/` | Why |
 | --- | --- |
-| `pyproject.toml`, `uv.lock`, `.python-version` | Python toolchain configuration. A root-level `pyproject.toml` would make `uv` treat the whole repository as the project. |
-| `justfile` | Owns the language-specific recipes. Runs from `backend/`, and points at the root compose files with `-f ../docker-compose.yml`. |
+| `pyproject.toml`, `uv.lock`, `.python-version` | Python toolchain configuration. A `pyproject.toml` above it would make `uv` treat the whole component as the project. |
+| `justfile` | Owns the language-specific recipes. Runs from `backend/`, and points at the component's compose files with `-f ../docker-compose.yml`. |
 | `app/`, `tests/`, `alembic/`, `alembic.ini` | The service and its migrations. |
-| `docker/Dockerfile.{dev,prod}` | The build context is `backend/`, so the image never sees `infra/`, the workflows or anything else at the root. |
+| `docker/Dockerfile.{dev,prod}` | The build context is `backend/`, so the image never sees `infra/`, the workflows or anything else in the component. |
 | `.importlinter` | Its contracts are about Python layers. |
 | `.dockerignore` | Applies to the backend's build context. |
 | `AGENTS.md` | The rules an agent needs while editing the service. |
 
 ## A browser client
 
-A web client is generated from [`cookiecutter-react-app`](../cookiecutter-react-app) into a
-repository of its own, with its own stack and CD, and calls this API across origins. Nothing in the
+A web client is generated from [`cookiecutter-react-app`](../cookiecutter-react-app) as another
+component — `component=web` beside this one — with its own stack and CD, and calls this API across
+origins. Nothing in the
 generated backend changes to allow it; two runtime settings do, and the stack sets both from
 `Pulumi.<stack>.yaml`:
 
@@ -131,11 +150,17 @@ generated backend changes to allow it; two runtime settings do, and the stack se
 
 Neither reaches the migration job: they are HTTP settings, and the job serves no HTTP.
 
-**A session that survives a reload needs the app and the API on one site** — your own domain, with
-the app and the API on two of its subdomains. The hostnames a deploy gets without one are two sites:
-`run.app` is on the Public Suffix List, so two Cloud Run URLs are cross-site, and on AWS a
-`cloudfront.net` app and an `on.aws` API are too. The refresh cookie is `SameSite=Strict`, so across
-that line signing in works and a reload signs you out.
+**A session that survives a reload needs the app and the API on one site.** The refresh cookie is
+`SameSite=Strict`, and the default hostnames are cross-site. The React template serves this API
+under `/api/*` on the app's own origin by default, so the browser sees one site; set
+`refreshTransport=cookie` and list the app's `site_url` in `corsOrigins`. A domain you own is the
+production setup.
+
+**A repository generated from plugin 0.5 with a frontend** (FastAPI `include_frontend=yes`, or a
+Gin repository with `frontendEnabled` on) keeps two repository variables nothing reads any more,
+`CLOUD_RUN_FRONTEND_SERVICE` and `FRONTEND_URL`, because `sync-github.sh` deletes only the variables
+it still knows. Remove them by hand with `gh variable delete <NAME>` once the old frontend service
+is gone.
 
 ## The cookiecutter trap this template handles explicitly
 
@@ -146,25 +171,37 @@ mysteriously broken pipeline in a repository nobody has run yet.
 `cookiecutter.json` therefore declares:
 
 ```json
-"_copy_without_render": [".github/workflows/*"]
+"_copy_without_render": [".github/workflows/*", "deploy/*/workflows/*"]
 ```
 
-The consequence is a real constraint, not a free win: **no file under `.github/workflows/` may
-contain a cookiecutter variable.** Everything project-specific in those workflows comes from
-repository variables (`vars.CLOUD_RUN_SERVICE`, `vars.IMAGE_REPO`, `vars.GCP_REGION`) instead. That
-is also why CD is inert until configured — an unset `vars.WIF_PROVIDER` skips every job, and the
-same gate keeps `infra.yml`'s preview job dormant until the stack exists.
+The consequence is a real constraint, not a free win: **no workflow may contain a cookiecutter
+variable.** Two plain-text tokens are the only templating in them, and the post-generation hook
+substitutes them when it installs each workflow at the repository root as `<component>-<name>`:
+`__COMPONENT__` becomes the component's name — its folder in `working-directory` and `paths:`, its
+workflow and concurrency names — and `__COMPONENT_VAR__` becomes that name in capitals, the prefix
+of every repository variable, so `vars.__COMPONENT_VAR___AWS_REGION` is read as
+`vars.API_AWS_REGION`. A unit test in every generated `infra/pulumi/tests` asserts that no token
+survives. Everything else project-specific comes from repository variables. That is also why CD is
+inert until configured — an unset `vars.<COMPONENT>_WIF_PROVIDER` skips every job, the same gate
+keeps the infra workflow's preview job dormant until the stack exists, and the apply identity's
+variable keeps its apply job dormant until the environment has been set up.
 
 Those variable names are not a convention anyone has to remember. `infra/pulumi` exports each one
-and `infra/scripts/sync-github.sh` copies it in, so the two halves cannot drift — and a unit test in
-`infra/pulumi/tests/` fails if they do. A stack exporting `workload_identity_provider` to a pipeline
-reading `vars.WIF_PROVIDER` is a deploy job that is skipped forever and never says why, which is
-exactly the class of failure a template should make impossible rather than document.
+and `infra/scripts/sync-github.sh` copies it in under the component's prefix, so the two halves
+cannot drift — and a unit test in `infra/pulumi/tests` fails if they do. A stack exporting
+`workload_identity_provider` to a pipeline reading `vars.API_WIF_PROVIDER` is a deploy job that is
+skipped forever and never says why, which is exactly the class of failure a template should make
+impossible rather than document.
 
 The same collision exists in `just`, whose interpolation syntax is *also* `{{ }}`. The justfiles
 are rendered, so their bodies are wrapped in `{% raw %}` blocks with the cookiecutter conditionals
 sitting outside them. If you edit a justfile in this template, check you are still inside the right
 block.
+
+The derived names are cookiecutter's *private rendered* variables, which take a double underscore:
+`__component_var` and `__name`. A single-underscore private variable is passed through unrendered —
+`{{ cookiecutter._name }}` would print the Jinja expression itself — so the double underscore is not
+a style choice.
 
 ## What the generated backend gives you
 
@@ -287,22 +324,24 @@ A Pulumi stack in Python that has never been applied and is ready to be. What fo
 `gcp-cloud-run` target; `aws-ecs-express` has the same shape in AWS's terms, below the table.
 
 On GCP it creates the service
-APIs, an Artifact Registry repository with a cleanup policy, a runtime service account and a CI
-service account with no downloadable key between them, a Workload Identity pool scoped to one
+APIs, an Artifact Registry repository with a cleanup policy, runtime, CI and apply service accounts
+with no downloadable key between them, a Workload Identity pool scoped to one
 repository, Secret Manager containers, and a Cloud Run service that scales to zero — plus, when
 `use_postgres` is `yes`, Cloud SQL with IAM database authentication and connector enforcement, the
 runtime account's IAM database user, and a migration job running as a migrator account of its own. `corsOrigins` and `refreshTransport` in the stack
 configuration are how a browser client generated from `cookiecutter-react-app` is let in; see
 [A browser client](#a-browser-client).
 
-Five properties are worth knowing before you change any of it:
+Six properties are worth knowing before you change any of it:
 
 | Property | Why it is that way |
 | --- | --- |
+| There is no placeholder image | The first `just infra-up` creates everything but the service and its migration job, which are created only once stack config `serviceImage` names a real image. `just infra-first-deploy` builds the production image from the checkout (`linux/amd64`, the `GIT_SHA` build argument, tagged with the commit, exactly as CD builds it), pushes it, sets `serviceImage` and applies; then it runs the migrations as CD does, waits for the rollout and smoke-tests both health probes. It refuses a dirty component folder (`infra/` excepted), a stack that has not been applied or has unpinned secrets, and one that already has a service. `sync-github.sh` refuses to un-gate CD until `service_url` exists. From then on CD owns the image, and the deploy role is exactly as narrow as before. |
 | The state bucket is a `gcloud` script, not a stack | A stack cannot create the store that holds its own state. `infra/bootstrap/state-bucket.sh` runs once, by a human. |
 | Secret *containers* are in code; secret *values* are not — anywhere, state included | Pulumi standards MUST-3, met as ADR-0023 records. The stack creates empty containers and grants access; `just infra-secrets` generates the signing key and the database admin password, adds each as a version without printing it, and pins the version number; a person adds anything only a person has, such as a Sentry DSN. The service has no database password at all: it logs in with IAM database authentication (`DATABASE_AUTH`). CD stays gated until every required version is pinned. |
 | The pipeline owns the image tag and nothing else | Declared `ignore_changes`, and every `just infra-*` recipe passes `--refresh`. Without the refresh, state still holds the old image, there is no diff to ignore, and the next apply rolls the service back to it. |
-| Components take a frozen config, and are unit-tested | `just infra-test` runs with no cloud credentials at all. That is most of the argument for Pulumi over HCL, so it is the cheapest job in `infra.yml`. |
+| Setup runs from a machine, every later apply from CI | ADR-0024 and Pulumi standards MUST-9. The bootstrap, the first `just infra-up`, `just infra-secrets` and `just infra-first-deploy` run once per environment from an operator's machine, because the identity CI applies with is created by the first apply. After `just infra-sync-github`, `<component>-infra.yml` previews every pull request and applies every infrastructure change merged to `main`, as the stack's apply identity, in the repository's `infrastructure` GitHub environment — whose protection rules, required reviewers and `main` only, are set by hand and are the gate on every apply. On AWS the apply role holds `AdministratorAccess`; on GCP the apply account holds one predefined admin role per service the stack manages, because the GCP infrastructure standards rule out basic roles in production. Either can change anything in its account or project, which is why one per environment is what bounds it. |
+| Components take a frozen config, and are unit-tested | `just infra-test` runs with no cloud credentials at all. That is most of the argument for Pulumi over HCL, so it is the cheapest job in `<component>-infra.yml`. |
 | Two settings are called "environment" | `environment` names resources; `appEnvironment` is the `ENVIRONMENT` variable the application reads — one of `local`/`test`/`staging`/`production`, defaulting to `staging`. They are configured separately because they vary separately, and conflating them is how a stack called `dev` deploys a service that believes it is `production`, serves no `/docs`, and says nothing about why. |
 | Anything the stack can derive is shipped wired; anything needing an account, a bill, a domain or a human eye is documented instead | That line is drawn explicitly in the generated `infra/README.md`. A deployment step on the first side that a user has to write by hand is a bug in this template. |
 
@@ -310,11 +349,11 @@ Five properties are worth knowing before you change any of it:
 public subnets for the load balancer and the tasks, no NAT gateway, isolated subnets with no route
 out for the database — an ECS cluster, an ECR repository, CloudWatch log groups with a
 retention, Secrets Manager secrets referenced by pinned `VersionId`, an Express service that
-provisions its own HTTPS load balancer, and five IAM roles: infrastructure, execution and runtime for
-ECS, and `deploy` and `preview` for CI, both trusting GitHub's OIDC token for exactly this
-repository. With `use_postgres` it adds RDS PostgreSQL 16 behind `rds.force_ssl`, with IAM database
-authentication for the service and an RDS-managed master password for the migration, a Fargate
-migration task CD runs before every deploy, and a sixth role, the migration's execution role — the
+provisions its own HTTPS load balancer, and six IAM roles: infrastructure, execution and runtime for
+ECS, and `deploy`, `preview` and `apply` for CI, all three trusting GitHub's OIDC token for exactly
+this repository. With `use_postgres` it adds RDS PostgreSQL 16 behind `rds.force_ssl`, with IAM
+database authentication for the service and an RDS-managed master password for the migration, a
+Fargate migration task CD runs before every deploy, and a seventh role, the migration's execution role — the
 only one that can read the master secret. The bootstrap script creates the S3 state bucket, its
 KMS key and the account's GitHub OIDC provider — all three account-level and shared, so the stack
 only looks them up — and a React app deployed into the same account shares them. Express Mode does not
@@ -323,9 +362,9 @@ has the cost table.
 
 `infra/README.md` in the generated repository is the ordered list of what a human has to do, from
 installing `gcloud` or `aws` to setting branch protection, and it marks the step where money starts. It also
-says why `just infra-up` prompts and how to run it unattended — `just infra-up dev --yes`. The
-recipe passes flags through rather than passing `--yes` itself, because the one command in this
-repository that creates billable resources should not auto-approve.
+says why `just infra-up` and `just infra-first-deploy` prompt and how to run them unattended —
+`just infra-up dev --yes`. The recipes pass flags through rather than passing `--yes` themselves,
+because the commands in this component that create billable resources should not auto-approve.
 
 ### The secret scan, and the one false positive it ships with
 
@@ -333,6 +372,12 @@ repository that creates billable resources should not auto-approve.
 `Pulumi.<stack>.yaml`. `encryptedkey` is a base64 blob, gitleaks' `generic-api-key` rule cannot
 tell it from a credential, and the first push of a generated repository fails on it. So the
 template ships `.gitleaks.toml`, read by both the CI job and the pre-commit hook.
+
+The CI job runs the gitleaks CLI from its release image, `ghcr.io/gitleaks/gitleaks:<pinned tag>`,
+rather than `gitleaks/gitleaks-action`, which needs a paid `GITLEAKS_LICENSE` on any repository an
+organisation owns. It scans every commit that touched the component's folder —
+`git --log-opts="-- <component>"`, on a full-depth checkout — with
+`--config <component>/.gitleaks.toml`, and exits non-zero on a finding.
 
 Two things about it are deliberate and both are easy to get wrong. It sets `[extend] useDefault =
 true` — **a gitleaks config without that replaces the default rules with nothing**, so every scan

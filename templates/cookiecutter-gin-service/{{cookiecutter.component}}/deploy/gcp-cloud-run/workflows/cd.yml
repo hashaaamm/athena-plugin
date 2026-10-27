@@ -1,0 +1,175 @@
+# Build, push and deploy the backend to Cloud Run.
+#
+# Inert until configured: the job is gated on the Workload Identity provider's repository variable,
+# so a freshly generated repository has a reviewed deploy path that cannot fire by accident. Set the
+# repository variables below and it starts working — no edit to this file required. Each is
+# prefixed with the component's name, so two components in one repository never read each other's:
+#
+#   __COMPONENT_VAR___WIF_PROVIDER          projects/…/workloadIdentityPools/…/providers/github
+#   __COMPONENT_VAR___DEPLOY_SA             <name>-ci-<env>@<project>.iam.gserviceaccount.com
+#   __COMPONENT_VAR___GCP_REGION            europe-west1
+#   __COMPONENT_VAR___IMAGE_REPO            europe-west1-docker.pkg.dev/<project>/<repo>/<image>
+#   __COMPONENT_VAR___CLOUD_RUN_SERVICE     the Cloud Run service name
+#   __COMPONENT_VAR___CLOUD_RUN_MIGRATE_JOB the Cloud Run job that runs `/app/api migrate up` (unset with no database)
+#
+# Do not set them by hand. The component's infra/pulumi exports every one of them and its
+# infra/scripts/sync-github.sh copies them in, so the names on both sides cannot drift — a stack
+# exporting `workload_identity_provider` to a pipeline reading another name is a job that is skipped
+# forever and never says why. infra/pulumi/contract_test.go asserts the match.
+#
+# The first image is not this pipeline's: `just infra-first-deploy` builds it on a laptop and creates
+# the service on it, because the service cannot exist before an image does. Every image after that
+# one is built here.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. The post-generation hook substitutes two tokens instead — the
+# component's folder name, and the same name upper-cased as a variable prefix — and writes the
+# result to the repository root as .github/workflows/__COMPONENT__-cd.yml. Nothing else here may be
+# project-specific; anything that is comes from a repository variable instead.
+name: __COMPONENT__ CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/backend/**'
+      - '.github/workflows/__COMPONENT__-cd.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: __COMPONENT__-cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # required for Workload Identity Federation
+
+# The component's folder. Every job checks out first: a run step's working directory does not exist
+# until the repository is on disk.
+defaults:
+  run:
+    working-directory: __COMPONENT__
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    if: vars.__COMPONENT_VAR___WIF_PROVIDER != ''
+    environment: production
+    env:
+      # IMAGE_REPO is the image's own path, so the tag is all CD adds — the same name
+      # `just infra-first-deploy` pushed the first image under.
+      IMAGE: ${{ vars.__COMPONENT_VAR___IMAGE_REPO }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless: a downloaded service-account JSON key is a long-lived credential in a file, and
+      # the handbook bans them outright. Ask Athena for the approved-library list if you are
+      # tempted by an action that wants one.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v2` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.__COMPONENT_VAR___WIF_PROVIDER }}
+          service_account: ${{ vars.__COMPONENT_VAR___DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate to Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.__COMPONENT_VAR___GCP_REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The Go build happens inside the Dockerfile's builder stage — CGO off, a static binary at
+      # /app/api, copied into distroless — so this job needs no Go toolchain of its own.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: __COMPONENT__/backend
+          file: __COMPONENT__/backend/docker/Dockerfile.prod
+          target: production
+          platforms: linux/amd64
+          push: true
+          # An immutable :sha tag, never :latest. A rollback is then a known image rather than a
+          # guess about what :latest pointed at last Tuesday.
+          tags: ${{ env.IMAGE }}
+          # Reported by /health/ready, so a deployed revision can say which commit it is.
+          build-args: GIT_SHA=${{ github.sha }}
+          # Scoped to the component, so another component's image built in this repository's
+          # Actions cache does not evict this one's layers.
+          cache-from: type=gha,scope=__COMPONENT__
+          cache-to: type=gha,mode=max,scope=__COMPONENT__   # mode=max caches the builder stage too
+
+      # Migrations run before the new revision takes traffic, and are expected to be
+      # backward-compatible with the currently-deployed code. Ask Athena for the database access
+      # and migrations rules for what "backward-compatible" has to mean here.
+      #
+      # The job runs the image just pushed with `/app/api migrate up` — goose, with the migrations
+      # embedded in the binary — so the schema and the code that expects it ship as one artefact.
+      - name: Migrate
+        if: vars.__COMPONENT_VAR___CLOUD_RUN_MIGRATE_JOB != ''
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.__COMPONENT_VAR___CLOUD_RUN_MIGRATE_JOB }}" \
+            --image "$IMAGE" --region "${{ vars.__COMPONENT_VAR___GCP_REGION }}" --quiet
+          gcloud run jobs execute "${{ vars.__COMPONENT_VAR___CLOUD_RUN_MIGRATE_JOB }}" \
+            --region "${{ vars.__COMPONENT_VAR___GCP_REGION }}" --wait
+
+      # `update`, not `deploy`. The shape of the service — service account, secrets, the Cloud SQL
+      # attachment, CORS — belongs to infrastructure-as-code. This pipeline owns exactly one field:
+      # the image. Two tools writing the same resource is how a plan fills up with phantom drift.
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          gcloud run services update "${{ vars.__COMPONENT_VAR___CLOUD_RUN_SERVICE }}" \
+            --image "$IMAGE" \
+            --region "${{ vars.__COMPONENT_VAR___GCP_REGION }}" \
+            --quiet
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe "${{ vars.__COMPONENT_VAR___CLOUD_RUN_SERVICE }}" \
+            --region "${{ vars.__COMPONENT_VAR___GCP_REGION }}" --format='value(status.url)')
+
+          # Liveness is what this pipeline is responsible for: the revision started and serves.
+          curl -fsS "$URL/health/live" >/dev/null
+          echo "live: $URL"
+
+          # Readiness can depend on something this pipeline does not do — a dependency that is not
+          # up yet, a first-run backfill. Report it, do not fail on it: failing here means a
+          # service's first deploy can never succeed. Download to a file rather than piping into
+          # grep, which closes the pipe and kills curl under `pipefail` on a check that had passed.
+          code=$(curl -s -o /tmp/ready.json -w '%{http_code}' "$URL/health/ready")
+          cat /tmp/ready.json
+          if [ "$code" != "200" ]; then
+            echo "::warning::$URL is live but not ready — check its dependencies"
+          fi
+
+  # Its own job, after the deploy, rather than a step inside it. A Docker-based action's image is
+  # pulled when its job starts, whether or not the step runs, so a skipped step still cost every
+  # deploy the pull; a skipped job never starts a runner. Without it, Sentry cannot attribute a
+  # regression to a commit.
+  sentry-release:
+    name: Sentry release
+    needs: deploy
+    if: vars.__COMPONENT_VAR___SENTRY_ORG != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # set_commits: auto reads the history since the previous release
+      - uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.__COMPONENT_VAR___SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.__COMPONENT_VAR___SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.__COMPONENT_VAR___SENTRY_PROJECT }}
+        with:
+          version: ${{ github.sha }}
+          environment: production
+          set_commits: auto
