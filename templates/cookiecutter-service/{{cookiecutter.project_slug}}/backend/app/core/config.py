@@ -8,16 +8,24 @@ application code, because a stray read is invisible to config validation.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal{% if cookiecutter.use_postgres == "yes" %}, Self{% endif %}
+from typing import Literal, Self
+from urllib.parse import urlsplit
 
 {% if cookiecutter.use_postgres == "yes" -%}
 from pydantic import SecretStr, computed_field, model_validator
 {%- else -%}
-from pydantic import computed_field
+from pydantic import computed_field, model_validator
 {%- endif %}
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["local", "test", "staging", "production"]
+{%- if cookiecutter.use_postgres == "yes" %}
+
+#: Where the refresh token travels. A property of the client, not of the session: a
+#: server-to-server caller keeps it in the JSON body, a browser must keep it where script cannot
+#: read it — an httpOnly cookie. `app/api/router.py` mounts one set of routes or the other.
+RefreshTransport = Literal["body", "cookie"]
+{%- endif %}
 {% if cookiecutter.use_postgres == "yes" %}
 
 # A sentinel, not a credential. The validator below refuses to start with it outside local and
@@ -55,21 +63,27 @@ class Settings(BaseSettings):
     json_logs: bool = True
     #: The immutable build SHA. CI sets it; Sentry needs it to attribute a regression to a commit.
     git_sha: str = "local"
-{% if cookiecutter.include_frontend == "yes" %}
+
     # --- Browser client --------------------------------------------------
-    #: Comma-separated origins the SPA is served from, e.g. "http://localhost:3000".
-    #: Empty — the default — means no cross-origin access at all, which is correct for a service
-    #: with no browser client. There is deliberately no "allow everything" setting: a wildcard
-    #: origin cannot carry credentials anyway, so it buys nothing but a finding in a pen test.
+    #: `CORS_ORIGINS`: comma-separated origins a browser client is served from, e.g.
+    #: "http://localhost:3000". Empty — the default — means no cross-origin access at all, which is
+    #: right for a service with no browser client. There is deliberately no "allow everything": a
+    #: wildcard origin cannot carry credentials anyway, so it buys nothing but a finding in a pen
+    #: test. Read it as `cors_origin_list`.
     cors_origins: str = ""
-{% endif %}{% if cookiecutter.use_postgres == "yes" %}
+{% if cookiecutter.use_postgres == "yes" %}
     # --- Database --------------------------------------------------------
     postgres_host: str = "db"
     postgres_port: int = 5432
     postgres_user: str = "{{ cookiecutter.project_slug.replace('-', '_') }}"
     postgres_password: SecretStr = SecretStr(PLACEHOLDER_SECRET)
     postgres_db: str = "{{ cookiecutter.project_slug.replace('-', '_') }}"
+{%- if cookiecutter.deploy_target == "aws-ecs-express" %}
+    #: The RDS DSN the stack generates, `ssl=require` included, or a full DSN in tests. Set this
+    #: and the parts above are ignored.
+{%- else %}
     #: Cloud SQL's Unix socket, or a full DSN in tests. Set this and the parts above are ignored.
+{%- endif %}
     database_url_override: str = ""
 
     # --- Authentication --------------------------------------------------
@@ -90,7 +104,8 @@ class Settings(BaseSettings):
     #: refresh replaces it with a new one, so this is the longest a client can go without calling
     #: the API before it has to sign in again — not how long a session can last.
     refresh_token_ttl_days: int = 30
-{%- if cookiecutter.include_frontend == "yes" %}
+    #: `body` or `cookie`: see `RefreshTransport`, and `app/api/refresh_cookie.py` for the cookie.
+    refresh_transport: RefreshTransport = "body"
     #: The refresh cookie's `Secure` attribute. True everywhere it matters, and refused as false
     #: anywhere deployed: without it the browser sends the cookie over plain HTTP. Local development
     #: serves the API on `http://localhost`, which is why `.env.example` turns it off there.
@@ -102,7 +117,6 @@ class Settings(BaseSettings):
     #: allows third-party cookies at all, and only the CSRF check in `app/api/refresh_cookie.py`
     #: stands between it and a forged request.
     refresh_cookie_samesite: Literal["strict", "lax", "none"] = "strict"
-{%- endif %}
 {% endif %}{% if cookiecutter.use_sentry == "yes" %}
     # --- Observability ---------------------------------------------------
     #: Empty means no error tracking. That MUST be the local default —
@@ -114,14 +128,30 @@ class Settings(BaseSettings):
     @property
     def is_deployed(self) -> bool:
         return self.environment in ("staging", "production")
-{% if cookiecutter.include_frontend == "yes" %}
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def cors_origin_list(self) -> list[str]:
-        """Parsed once, here, so `.env` can hold a plain comma-separated string and no caller
-        has to remember to strip whitespace."""
+        """`CORS_ORIGINS` parsed, trimmed and with empty entries dropped, so `.env` can hold a plain
+        comma-separated string and no caller has to remember to strip whitespace."""
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-{% endif %}{% if cookiecutter.use_postgres == "yes" %}
+
+    @model_validator(mode="after")
+    def _refuse_an_entry_that_is_not_an_origin(self) -> Self:
+        """Accept exactly what a browser sends in an `Origin` header: a scheme, a host and an
+        optional port, nothing else.
+
+        A trailing slash or a path never matches a real `Origin`, so such an entry would be dead
+        configuration that looks alive; `*` is refused for the reason on `cors_origins`.
+        """
+        for origin in self.cors_origin_list:
+            if not _is_origin(origin):
+                raise ValueError(
+                    f"CORS_ORIGINS entry {origin!r} must be an origin such as "
+                    "https://app.example.com"
+                )
+        return self
+{% if cookiecutter.use_postgres == "yes" %}
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
@@ -153,7 +183,19 @@ class Settings(BaseSettings):
         # `require_signing_key`, which `create_app` calls — so a deployed *server* still refuses to
         # start with the sentinel, which is the failure that matters.
         return self
-{%- if cookiecutter.include_frontend == "yes" %}
+
+    @model_validator(mode="after")
+    def _refuse_a_cookie_transport_no_browser_can_use(self) -> Self:
+        """Every browser sends `Origin` on a cross-origin POST, and on a same-origin one too, so the
+        CSRF check in front of the cookie routes refuses every refresh unless the client's origin
+        is listed. Starting anyway would be a sign-in that works and a session that never survives
+        a reload, which is a long afternoon to diagnose."""
+        if self.refresh_transport == "cookie" and not self.cors_origin_list:
+            raise ValueError(
+                "REFRESH_TRANSPORT=cookie requires CORS_ORIGINS: "
+                "the CSRF check only accepts listed origins"
+            )
+        return self
 
     @model_validator(mode="after")
     def _refuse_an_unprotected_refresh_cookie(self) -> Self:
@@ -167,8 +209,26 @@ class Settings(BaseSettings):
         if self.is_deployed and not self.refresh_cookie_secure:
             raise ValueError("REFRESH_COOKIE_SECURE must be true outside local and test")
         return self
-{%- endif %}
 {% endif %}
+
+def _is_origin(value: str) -> bool:
+    """A scheme of http or https, a host and an optional port — and no path, query, fragment,
+    credentials or wildcard."""
+    try:
+        parts = urlsplit(value)
+        _ = parts.port  # raises on a port that is not a number
+    except ValueError:
+        return False
+    return (
+        parts.scheme in ("http", "https")
+        and bool(parts.hostname)
+        and not parts.path
+        and not parts.query
+        and not parts.fragment
+        and parts.username is None
+        and "*" not in value
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

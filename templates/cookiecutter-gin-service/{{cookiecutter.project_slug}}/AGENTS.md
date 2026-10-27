@@ -6,7 +6,7 @@ rules.
 
 | Subtree | Rules | What it is |
 | --- | --- | --- |
-| `backend/` | [backend/AGENTS.md](backend/AGENTS.md) | Gin service in Go, Postgres via pgx + sqlc, Cloud Run |
+| `backend/` | [backend/AGENTS.md](backend/AGENTS.md) | Gin service in Go, Postgres via pgx + sqlc, {% if cookiecutter.deploy_target == "aws-ecs-express" %}ECS Express Mode{% else %}Cloud Run{% endif %} |
 | `infra/` | [infra/README.md](infra/README.md) | Pulumi (Go): the cloud resources and the order they are created in |
 
 ## What this service is
@@ -26,8 +26,9 @@ does not know this will make architecturally wrong choices confidently.>>
   where this repository runs. It is a sibling of `backend/`, not a part of it.
 
 Adding a component means adding a directory and one line to the root `justfile`. It never means
-moving what is already here. A web client is the FastAPI template's `frontend/`, dropped in as it
-is: this backend answers the same HTTP contract — `infra/README.md` has the steps.
+moving what is already here. A browser client is not a component of this repository: it is its
+own repository, generated from the handbook's `cookiecutter-react-app` template, and pointing it at
+this API is stack configuration (`corsOrigins`) — `infra/README.md` has the steps.
 
 ## Commands
 
@@ -68,14 +69,14 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 - Do not edit generated code (`backend/internal/db/`, `backend/docs/`) by hand. Change the SQL or
   the annotation and run `just gen`.
 - Do not modify `.github/workflows/` without saying so explicitly in your summary.
-- Do not run `gcloud` mutations or anything that changes cloud state. That includes
+- Do not run `{% if cookiecutter.deploy_target == "aws-ecs-express" %}aws{% else %}gcloud{% endif %}` mutations or anything that changes cloud state. That includes
   `just infra-up` and `just infra-sync-github`, and the bootstrap script. `just infra-test` and
   `just infra-preview` are the two that change nothing; everything else under `infra/` needs a
   human who has read the preview.
 - Do not run `just infra-destroy` or `just infra-teardown`, ever, and do not suggest removing the
   guards on them. The teardown script deletes the Pulumi state bucket, which is irreversible and
   is the only record of what exists.
-- Do not put a secret value in `infra/`. The stack creates empty containers; a person fills them.
+- Do not put a secret value in `infra/`. The stack creates empty {% if cookiecutter.deploy_target == "aws-ecs-express" %}secrets{% else %}containers{% endif %}; a person fills them.
 
 ## Recurring failures
 

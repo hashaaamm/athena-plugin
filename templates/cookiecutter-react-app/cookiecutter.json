@@ -1,0 +1,31 @@
+{
+  "project_name": "Example App",
+  "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '-').replace('_', '-') }}",
+  "description": "A React single-page application built to the Engineering Athena handbook.",
+  "author": "Your Name",
+  "deploy_target": ["gcp-cloud-run", "aws-s3-cloudfront"],
+  "gcp_project_id": "your-gcp-project",
+  "gcp_region": "europe-west1",
+  "aws_account_id": "123456789012",
+  "aws_region": "eu-west-1",
+  "github_repository": "your-org/{{ cookiecutter.project_slug }}",
+  "include_auth": ["yes", "no"],
+  "api_url": "http://localhost:8000",
+  "_copy_without_render": [
+    ".github/workflows/*",
+    "deploy/*/workflows/*"
+  ],
+  "__prompts__": {
+    "deploy_target": {
+      "__prompt__": "Where it deploys",
+      "gcp-cloud-run": "GCP: Cloud Run serving the nginx image",
+      "aws-s3-cloudfront": "AWS: a private S3 bucket behind CloudFront"
+    },
+    "gcp_project_id": "GCP project id (gcp-cloud-run only)",
+    "gcp_region": "GCP region (gcp-cloud-run only)",
+    "aws_account_id": "AWS account id, 12 digits (aws-s3-cloudfront only)",
+    "aws_region": "AWS region (aws-s3-cloudfront only)",
+    "include_auth": "Sign-in, registration and account screens (the backend needs a database)",
+    "api_url": "The backend this app calls in local development"
+  }
+}

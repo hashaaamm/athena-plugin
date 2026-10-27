@@ -1,9 +1,10 @@
 # The whole local stack. `just dev` from a clean clone must reach a running service in under five
 # minutes. Ask Athena for the local development and command runner rules.
 #
-# This file is at the repository ROOT, not in backend/, because it orchestrates more than one
-# component: today the database and the backend, tomorrow the frontend alongside them. A compose
-# file per component cannot express "the frontend waits for the backend to be healthy".
+# This file is at the repository ROOT, not in backend/, because it orchestrates the stack rather
+# than one component: a compose file per component cannot express "the backend waits for the
+# database to be healthy". A browser client is not part of it — it is its own repository,
+# generated from cookiecutter-react-app, and runs against this API from there.
 
 name: {{ cookiecutter.project_slug }}
 
@@ -68,44 +69,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
-{% endif %}{%- if cookiecutter.include_frontend == "yes" %}
-  # The web client. A stock Node image with the source bind-mounted, rather than a dev image to
-  # build and rebuild: Vite's dev server is the same binary everywhere, and the only thing an
-  # image would add here is a cache to invalidate. The production image is a different file
-  # entirely — frontend/docker/Dockerfile.prod.
-  frontend:
-    image: node:24-slim
-    working_dir: /app
-    # corepack activates the exact pnpm pinned in package.json's `packageManager` field, so the
-    # container and CI resolve dependencies identically. --frozen-lockfile makes a stale lockfile
-    # a startup failure rather than a silent re-resolve: run `cd frontend && just lock` and commit.
-    # `exec` on the last command so Vite becomes PID 1 and receives SIGTERM directly.
-    # Without it `sh` holds PID 1, the signal never reaches Vite, and `docker compose down`
-    # waits out the full stop timeout on every shutdown.
-    command: sh -c "corepack enable && pnpm install --frozen-lockfile && exec pnpm dev"
-    environment:
-      # The BROWSER makes these requests, so this is the host's address, not `backend:8000`.
-      # Vite inlines it at build time; here the dev server reads it on start.
-      VITE_API_URL: "http://localhost:8000"
-    volumes:
-      - ./frontend:/app
-      # A named volume, so the container's node_modules (Linux binaries) never collide with a
-      # host install (macOS binaries) through the bind mount above.
-      - frontend-node-modules:/app/node_modules
-    ports:
-      - "${FRONTEND_HOST_PORT:-3000}:3000"
-    depends_on:
-      # Started, not healthy: the dev server should come up and show the API as unreachable
-      # rather than refuse to start because the backend is still migrating.
-      backend:
-        condition: service_started
-{%- endif %}
-{% if cookiecutter.use_postgres == "yes" or cookiecutter.include_frontend == "yes" %}
+
 volumes:
-{%- if cookiecutter.use_postgres == "yes" %}
   db-data:
-{%- endif %}
-{%- if cookiecutter.include_frontend == "yes" %}
-  frontend-node-modules:
-{%- endif %}
 {%- endif %}

@@ -1,6 +1,6 @@
 # Secret-scanning configuration, read by the `secrets` job in CI and by the pre-commit hook.
 #
-# It exists for exactly one false positive. `pulumi stack init --secrets-provider=gcpkms://…`
+# It exists for two kinds of false positive. The first: `pulumi stack init --secrets-provider=…kms://…`
 # writes `secretsprovider` and `encryptedkey` into `infra/pulumi/Pulumi.<stack>.yaml`, and
 # `encryptedkey` is a long base64 blob that the generic-api-key rule cannot tell from a credential.
 # It is the stack's data key, encrypted by a KMS key only the project can use — ciphertext, not a
@@ -20,3 +20,13 @@ useDefault = true
 description = "Pulumi's own stack-file keys: KMS ciphertext and a key URL, not credentials."
 regexTarget = "line"
 regexes = ['''^\s*(encryptedkey|secretsprovider):\s''']
+
+# The second: signing keys that exist only to be long enough for `serve`'s 32-character floor in
+# tests and in CI's smoke job. Allowlisted by exact VALUE, so the rule still fires on anything else
+# on those lines, and a real key pasted into a test is still a finding.
+[[allowlists]]
+description = "Test and CI signing keys, which sign nothing outside a test process."
+regexes = [
+  '''^a-test-signing-key-that-is-long-enough-(for-hs512-too-0123456789abcdef|0123456789)$''',
+  '''^smoke-test-signing-key-that-is-long-enough-0123456789$''',
+]

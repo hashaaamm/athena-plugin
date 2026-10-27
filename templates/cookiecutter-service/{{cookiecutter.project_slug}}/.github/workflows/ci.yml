@@ -11,8 +11,6 @@ name: CI
 on:
   pull_request:
     # Per-component filter. A README-only change should not run the Python suite.
-    # When frontend/ lands it gets frontend-ci.yml with its own paths filter, rather than more
-    # jobs here — two components in one workflow means each waits for the other's runner.
     paths:
       - 'backend/**'
       - 'docker-compose*.yml'

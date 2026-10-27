@@ -2,12 +2,14 @@
 
 > **This is a published copy.** It is generated from Athena's source and rewritten on every publish, so an edit made here is lost at the next one. Report a problem as an issue on the repository you found it in.
 
-A production-ready **FastAPI service in a monorepo-shaped repository**, with an optional
-**React + TypeScript SPA** beside it. It generates a repo whose backend already satisfies the
-handbook's **MUST**s — layering, typed settings, async SQLAlchemy, Alembic, multi-stage image,
-Cloud Run health endpoints, CI and an inert-until-configured CD pipeline — and whose frontend,
-when you ask for one, arrives with a typed API client generated from that backend's own OpenAPI
-document.
+A production-ready **FastAPI service in a monorepo-shaped repository**. It generates a repo whose
+backend already satisfies the handbook's **MUST**s — layering, typed settings, async SQLAlchemy,
+Alembic, multi-stage image, Cloud Run health endpoints, CI and an inert-until-configured CD
+pipeline.
+
+**It is backend-only.** A browser client is a repository of its own, generated from
+[`cookiecutter-react-app`](../cookiecutter-react-app), with its own stack and its own CD (ADR-0022),
+and pointed at this API by two stack settings — see [A browser client](#a-browser-client).
 
 **With a database, the endpoints it ships are the two health probes and six real authentication
 endpoints** — register, login, refresh, logout, me, change password. They are the worked example of
@@ -30,6 +32,10 @@ expensive to find there and are pre-fixed here.
 uvx cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service   # interactive
 uvx cookiecutter --no-input gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service \
   project_name="Billing API"
+
+# The same service, deploying to AWS instead: ECS Express Mode, and RDS when it has a database
+uvx cookiecutter --no-input gh:hashaaamm/athena-plugin --directory templates/cookiecutter-service \
+  project_name="Billing API" deploy_target=aws-ecs-express aws_account_id=123456789012 aws_region=eu-west-1
 ```
 
 Then, in the generated repository:
@@ -72,16 +78,18 @@ lockfile fails the build loudly rather than silently resolving something new.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `project_name` | `Example Service` | Human name. Used in the OpenAPI title and the READMEs. |
-| `project_slug` | derived | Directory name, package name, Cloud Run service name, compose project name. |
+| `project_slug` | derived | Directory name, package name, the deployed service's name, compose project name. |
 | `description` | … | One line. Lands in `pyproject.toml` and the OpenAPI description. |
 | `author` | `Your Name` | Attribution. |
 | `python_version` | `3.12` | Base image tag, `requires-python`, Ruff and mypy targets, `.python-version`. |
-| `gcp_project_id` | `your-gcp-project` | The GCP project the Pulumi stack targets: `infra/pulumi/Pulumi.dev.yaml`, the state-bucket URL in `Pulumi.yaml`, and the bootstrap script's default. Not in any workflow. |
-| `gcp_region` | `europe-west1` | Same three places. Cloud Run, Cloud SQL and Artifact Registry all live here. |
-| `github_repository` | `your-org/<slug>` | `owner/repo`. Becomes the Workload Identity provider's attribute condition, which is the one line stopping any repository on GitHub from assuming the CI identity. Wrong here means a deploy that cannot authenticate; a wildcard here means anyone can. |
+| `deploy_target` | `gcp-cloud-run` | Where the service deploys, and so which `infra/` and which deploy workflows the repository gets. `gcp-cloud-run` is Cloud Run, Cloud SQL and Artifact Registry, with state in GCS. `aws-ecs-express` is ECS Express Mode on Fargate, RDS for PostgreSQL and ECR, with state in S3 under AWS KMS (ADR-0021). Both are complete implementations of the same interface — the same `just infra-*` recipes, the same order of operations in `infra/README.md`, deploy pipelines that are inert until `just infra-sync-github` has run — so nothing outside `infra/` and `.github/workflows/` differs but the words. The unchosen target is deleted at generation. |
+| `gcp_project_id` | `your-gcp-project` | `gcp-cloud-run` only. The GCP project the Pulumi stack targets: `infra/pulumi/Pulumi.dev.yaml`, the state-bucket URL in `Pulumi.yaml`, and the bootstrap script's default. Not in any workflow. |
+| `gcp_region` | `europe-west1` | `gcp-cloud-run` only. Same three places. Cloud Run, Cloud SQL and Artifact Registry all live here. |
+| `aws_account_id` | `123456789012` | `aws-ecs-express` only, and refused before generation unless it is 12 digits. The account the provider is allowed to touch (`allowed_account_ids`, so a shell holding another account's session fails before it plans anything), the state bucket `pulumi-state-<account>-<region>` in `Pulumi.yaml`, and the account the bootstrap script checks it is talking to. Not in any workflow. |
+| `aws_region` | `eu-west-1` | `aws-ecs-express` only, and refused unless it reads as a region code. The same places; the VPC, the Express services, RDS and ECR all live here. |
+| `github_repository` | `your-org/<slug>` | `owner/repo`. On GCP it becomes the Workload Identity provider's attribute condition; on AWS, the `sub` condition in the CI roles' trust policies. Either way it is the one line stopping any repository on GitHub from assuming the CI identity. Wrong here means a deploy that cannot authenticate; a wildcard here means anyone can. |
 | `use_postgres` | `yes` | `no` drops Alembic, the ORM base, the database from Compose, readiness' database check **and the whole authentication example**, leaving the layer packages and the health endpoints. `yes` is the variant with two tables, two migrations and six working endpoints over them. |
 | `use_sentry` | `yes` | `no` drops the SDK and `app/core/observability.py`. `yes` wires it with an **empty DSN by default** — local development reports nothing, by rule. |
-| `include_frontend` | `no` | `yes` scaffolds the React SPA: Vite, TanStack Router and Query, Tailwind v4 with shadcn/ui, a generated API client, Vitest, its own justfile, Compose service, production image, CI *and* CD workflows, and its own Cloud Run service in the Pulumi stack — and turns on CORS in the backend, pointed at that service's URL. With a database it signs people in: the refresh token becomes an httpOnly cookie with a CSRF check in front of it, and the access token lives in memory. `no` removes the directory, both its workflows, the CORS test and the refresh cookie entirely — the refresh token then travels in the JSON body. |
 
 ## What is at the root, and what is in `backend/`
 
@@ -91,8 +99,8 @@ developer runs from the repository root, is root. Anything specific to the Pytho
 
 | At the root | Why |
 | --- | --- |
-| `justfile` | It is the entry point an engineer and an agent both reach for. It owns the stack (`dev`, `down`, `logs`) and delegates the rest to `backend/justfile`. Adding a frontend adds a delegation line, not a new command vocabulary. |
-| `docker-compose.yml` / `.ci.yml` | They describe a *stack*: database plus backend, later plus frontend. A compose file inside `backend/` cannot express "the frontend waits for the backend", and two compose files cannot share one network without ceremony. |
+| `justfile` | It is the entry point an engineer and an agent both reach for. It owns the stack (`dev`, `down`, `logs`) and delegates the rest to `backend/justfile`. Another component adds a delegation line, not a new command vocabulary. |
+| `docker-compose.yml` / `.ci.yml` | They describe a *stack*: database plus backend. A compose file inside `backend/` cannot express "the backend waits for the database", and two compose files cannot share one network without ceremony. |
 | `.github/workflows/` | One repository has one Actions surface. Per-component isolation is achieved with `paths:` filters inside the workflows, not by hiding workflow files in subdirectories — GitHub only reads `.github/workflows/` at the root anyway. |
 | `.env.example` | The same `POSTGRES_*` values configure the `db` container *and* the backend that connects to it. Compose reads `.env` from its own directory, which is the root. |
 | `infra/` | It describes where the *repository* runs, not how the Python service is built. It has its own `pyproject.toml`, its own lockfile and its own workflow, and it would be wrong inside `backend/` for the same reason `docker-compose.yml` is. |
@@ -101,37 +109,33 @@ developer runs from the repository root, is root. Anything specific to the Pytho
 
 | In `backend/` | Why |
 | --- | --- |
-| `pyproject.toml`, `uv.lock`, `.python-version` | Python toolchain configuration. A frontend has no opinion about Ruff, and a root-level `pyproject.toml` would make `uv` treat the whole repository as the project. |
+| `pyproject.toml`, `uv.lock`, `.python-version` | Python toolchain configuration. A root-level `pyproject.toml` would make `uv` treat the whole repository as the project. |
 | `justfile` | Owns the language-specific recipes. Runs from `backend/`, and points at the root compose files with `-f ../docker-compose.yml`. |
 | `app/`, `tests/`, `alembic/`, `alembic.ini` | The service and its migrations. |
-| `docker/Dockerfile.{dev,prod}` | The build context is `backend/`, so the image never sees the frontend's `node_modules`. |
+| `docker/Dockerfile.{dev,prod}` | The build context is `backend/`, so the image never sees `infra/`, the workflows or anything else at the root. |
 | `.importlinter` | Its contracts are about Python layers. |
 | `.dockerignore` | Applies to the backend's build context. |
 | `AGENTS.md` | The rules an agent needs while editing the service. |
 
-### Adding the frontend later
+## A browser client
 
-Generating with `include_frontend=no` and changing your mind is not a reshuffle. Re-run the
-template into a scratch directory with `include_frontend=yes` and copy across five things:
+A web client is generated from [`cookiecutter-react-app`](../cookiecutter-react-app) into a
+repository of its own, with its own stack and CD, and calls this API across origins. Nothing in the
+generated backend changes to allow it; two runtime settings do, and the stack sets both from
+`Pulumi.<stack>.yaml`:
 
-1. `frontend/` itself.
-2. The `frontend` service and the `frontend-node-modules` volume in `docker-compose.yml`.
-3. The `frontend :=` line in the root `justfile`, plus the delegation lines in `lint`, `fmt`,
-   `test`, `build` and the `gen-api` recipe.
-4. `.github/workflows/frontend-ci.yml`, the `VITE_*` and `CORS_ORIGINS` block in `.env.example`,
-   and the CORS middleware in `backend/app/main.py` with its setting and its test.
-   With a database, also the browser's half of the refresh token: `backend/app/api/refresh_cookie.py`
-   and its test, the two `refresh_cookie_*` settings and their validator in `app/core/config.py`,
-   `REFRESH_COOKIE_SECURE` in `.env.example`, and the cookie versions of `app/api/v1/auth.py`,
-   `AccessTokenRead` in `app/schemas/auth.py` and the two session test modules. The service, the
-   repository and the table do not change; only where the refresh token travels does.
-5. Its half of the deployment: the second `Service(...)` and its two exports in
-   `infra/pulumi/__main__.py`, the `web` runtime account in `components/identities.py`, the two
-   frontend rows in `infra/scripts/sync-github.sh`, and
-   `.github/workflows/frontend-cd.yml`. The unit test in `infra/pulumi/tests` that asserts those
-   three name the same variables is what tells you if you copied two of the three.
+| Stack config | Becomes | What it does |
+| --- | --- | --- |
+| `corsOrigins` | `CORS_ORIGINS` on the service, when non-empty | The origins a browser may call this API from — the React app's `site_url`. Each entry must be a bare origin (`https://app.example.com`: no path, no trailing slash, no `*`); the stack and `Settings` both refuse anything else. Empty, the default, means no CORS at all. |
+| `refreshTransport` | `REFRESH_TRANSPORT` on the service | `body`, the default, or `cookie`. With a database only, because without one there is no authentication. `cookie` mounts the cookie versions of login, refresh, logout and change-password: the refresh token becomes an `HttpOnly` cookie, refresh and logout require the CSRF header, and the OpenAPI document describes that transport. It needs `corsOrigins`, and both the stack and the service refuse it without one. |
 
-Nothing else in `backend/` moves.
+Neither reaches the migration job: they are HTTP settings, and the job serves no HTTP.
+
+**A session that survives a reload needs the app and the API on one site** — your own domain, with
+the app and the API on two of its subdomains. The hostnames a deploy gets without one are two sites:
+`run.app` is on the Public Suffix List, so two Cloud Run URLs are cross-site, and on AWS a
+`cloudfront.net` app and an `on.aws` API are too. The refresh cookie is `SameSite=Strict`, so across
+that line signing in works and a reload signs you out.
 
 ## The cookiecutter trap this template handles explicitly
 
@@ -162,12 +166,6 @@ are rendered, so their bodies are wrapped in `{% raw %}` blocks with the cookiec
 sitting outside them. If you edit a justfile in this template, check you are still inside the right
 block.
 
-**And a third time, in JSX.** An inline object prop — `activeProps={{ className: "..." }}` — opens
-with the same two braces. Every one of those in `frontend/` is hoisted to a `const` above the
-component, which is why the JSX in this template has no inline object props anywhere. It is also
-better React, but that is not why it is done. Before committing an edit under `frontend/`, grep
-the file for a doubled brace that is not a cookiecutter variable you meant to write.
-
 ## What the generated backend gives you
 
 - **Layers, enforced.** `api → services → repositories → models`, with `import-linter`
@@ -180,7 +178,9 @@ the file for a doubled brace that is not a cookiecutter variable you meant to wr
 - **Typed settings.** One `Settings`, an `lru_cache`d accessor, no `os.environ` anywhere else, and
   a validator that refuses a placeholder password outside `local` and `test`. The JWT signing key
   is checked the same way but in `create_app` rather than in that validator — see "The signing
-  key" below for why the difference is deliberate.
+  key" below for why the difference is deliberate. `CORS_ORIGINS` and `REFRESH_TRANSPORT` are
+  settings too, validated the same way and named as the Gin template names them — see "A browser
+  client" above.
 - **Async SQLAlchemy 2.0 + Alembic**, with an `env.py` that gets two things right that are easy to
   get wrong: the `context.begin_transaction()` block (without it the DDL runs and is discarded,
   and Alembic reports success over an empty database) and a URL — or a whole connection — read
@@ -229,9 +229,9 @@ the permission guard:
 | Sessions | A `refresh_sessions` row per refresh token, keyed by its `jti`; the token itself is never stored. Every refresh revokes the token it spent and issues the next one in the same family, with the row locked `FOR UPDATE`. A spent token coming back revokes the whole family. |
 | Reuse detection that survives its own 401 | A refused request rolls its writes back — except the family revocation, which is the point of the refusal. `CompromisedSessionError` is the one error the session dependency commits on. |
 | Logout and revocation | Logout revokes the family and never fails. Changing a password revokes every family the user has and hands the caller a new one. A deactivated user's next refresh is refused and its family revoked. Revocation latency is the access token's fifteen minutes, and the service docstring says so. |
-| Where the refresh token travels | In the JSON body without a frontend. With one, in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie scoped to `/api/v1/auth`, never in a body, with refresh and logout behind a custom-header and `Origin` CSRF check. |
+| Where the refresh token travels | `REFRESH_TRANSPORT`, at runtime. `body`, the default: in the JSON body, both ways. `cookie`, for a browser: in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie scoped to `/api/v1/auth`, never in a body, with refresh and logout behind a custom-header and `Origin` CSRF check. `app/api/v1/auth_body.py` and `auth_cookie.py` hold the four routes that differ; `app/api/router.py` mounts one of them. |
 | 401 | Decided in exactly one place, `get_current_actor`. `HTTPBearer(auto_error=False)`, because `auto_error=True` answers **403** to a missing header, in FastAPI's error shape rather than yours. |
-| Closed by default | `app/api/router.py` mounts a `public` router and a `private` one carrying the actor dependency. A resource included in the wrong one is a mistake visible in a five-line file. |
+| Closed by default | `app/api/router.py` mounts a `public` router and a `private` one carrying the actor dependency. A resource included in the wrong one is a mistake visible in one short function. |
 
 **What it does not do**, said here rather than discovered later: no roles or permission guards, no
 ownership checks, no password reset, no email verification, no rate limit on the login route, and
@@ -280,64 +280,18 @@ contracts exist to refuse.
 With `use_postgres=no` none of that exists: no model, no repository, no auth, and view -> service
 is the whole flow. That variant is health-only and says so.
 
-## What the generated `frontend/` gives you
-
-Only with `include_frontend=yes`. A React 19 SPA in TypeScript, built with Vite 6 — the same
-stack, and largely the same files, as the reference application it was lifted from.
-
-- **A generated API client.** `openapi-typescript` turns the backend's OpenAPI document into
-  types and `openapi-fetch` makes the calls, so a renamed field is a failed build rather than
-  `undefined` in a table cell. `just gen-api` regenerates it; the committed `schema.d.ts` is a
-  hand-written seed so a fresh clone type-checks before the backend has ever been started.
-- **One HTTP entry point**, in `src/lib/api/client.ts`, which also reads the backend's error
-  envelope: `{ error: { code, message } }` becomes a thrown `ApiError` with the code intact.
-- **Fetchers, then hooks over them.** Each resource module exports plain async functions and
-  thin TanStack Query wrappers. Testing a fetcher needs no React and no provider, which is why
-  the fetchers are the part with tests.
-- **TanStack Router with the tree in one readable file**, a 404 screen, a router-level error
-  screen, and an error boundary *inside* the shell so a page that throws costs the user the
-  page rather than their navigation.
-- **Tailwind v4 and shadcn/ui**, with the palette in `src/index.css` — there is no
-  `tailwind.config.js` in v4, and no hex code belongs in a component.
-- **Sign-in, registration, an account page and a dashboard**, with a database. The dashboard
-  reads `/health/ready` and renders loading, error and data — three of the four states every fetch
-  has. The refresh token is an httpOnly cookie no script can read; the access token lives in memory
-  only, is restored from the cookie after a reload by the route guard, and is refreshed on a 401 by
-  the client middleware — one refresh in flight however many requests failed, serialised across
-  tabs, with the failed request replayed. Sign-out ends the session on the server.
-  `frontend/AGENTS.md` has the reasoning, and the one deployment fact it depends on: the SPA and
-  the API on the same site. Without a database the dashboard is the only page. The form stack
-  (`react-hook-form`, `zod`, `@hookform/resolvers`) is what `frontend/README.md` prescribes.
-- **Vitest + Testing Library**, asserting through roles and text, mocking at the `api` client
-  rather than at `fetch`.
-- **A production image** that builds with pnpm and serves with `nginx-unprivileged` on `$PORT`,
-  with the SPA fallback and cache headers written down — plus its own paths-filtered CI
-  workflow, so a backend change never queues behind a frontend runner.
-- **The other half of that: somewhere to run it.** A second Cloud Run service in
-  `infra/pulumi/__main__.py` with its own runtime account, no database and no secrets, and a
-  `frontend-cd.yml` that builds the image, tags it with the commit and updates that one field —
-  inert until `WIF_PROVIDER` is set, like every other pipeline here.
-- **CORS in the backend**, configured rather than wildcarded, with tests. Without it the API
-  answers every request correctly and the browser still refuses to hand the body to the page.
-
-Two constraints are worth knowing before you edit any of it. `VITE_*` variables are **inlined at
-build time**, so they are Docker build args, not runtime environment variables, and none of them
-can be a secret. And the lockfile is not templated, for the same reason `uv.lock` is not.
-
-The first of those is the reason the deploy pipeline has an ordering rather than just steps: the
-API's origin is compiled into the bundle, so `frontend-cd.yml` reads it from the `SERVICE_URL`
-repository variable the stack exports, and refuses to build when it has neither that nor the
-`FRONTEND_API_URL` override. A bundle built without one calls `http://localhost:8000`, deploys
-cleanly, serves a page and answers nothing — which is why it is a failed run instead.
-
 ## What the generated `infra/` gives you
 
-A Pulumi stack in Python that has never been applied and is ready to be. It creates the service
+A Pulumi stack in Python that has never been applied and is ready to be. What follows describes the
+`gcp-cloud-run` target; `aws-ecs-express` has the same shape in AWS's terms, below the table.
+
+On GCP it creates the service
 APIs, an Artifact Registry repository with a cleanup policy, a runtime service account and a CI
 service account with no downloadable key between them, a Workload Identity pool scoped to one
 repository, Secret Manager containers, and a Cloud Run service that scales to zero — plus Cloud SQL
-and a migration job when `use_postgres` is `yes`, and a second Cloud Run service with a runtime
-account of its own for the SPA when `include_frontend` is `yes`.
+and a migration job when `use_postgres` is `yes`. `corsOrigins` and `refreshTransport` in the stack
+configuration are how a browser client generated from `cookiecutter-react-app` is let in; see
+[A browser client](#a-browser-client).
 
 Five properties are worth knowing before you change any of it:
 
@@ -348,17 +302,30 @@ Five properties are worth knowing before you change any of it:
 | The pipeline owns the image tag and nothing else | Declared `ignore_changes`, and every `just infra-*` recipe passes `--refresh`. Without the refresh, state still holds the old image, there is no diff to ignore, and the next apply rolls the service back to it. |
 | Components take a frozen config, and are unit-tested | `just infra-test` runs with no cloud credentials at all. That is most of the argument for Pulumi over HCL, so it is the cheapest job in `infra.yml`. |
 | Two settings are called "environment" | `environment` names resources; `appEnvironment` is the `ENVIRONMENT` variable the application reads — one of `local`/`test`/`staging`/`production`, defaulting to `staging`. They are configured separately because they vary separately, and conflating them is how a stack called `dev` deploys a service that believes it is `production`, serves no `/docs`, and says nothing about why. |
-| Anything the stack can derive is shipped wired; anything needing an account, a bill, a domain or a human eye is documented instead | That line is drawn explicitly in the generated `infra/README.md`. A deployment step on the first side that a user has to write by hand is a bug in this template, and the frontend's missing Cloud Run service was one. |
+| Anything the stack can derive is shipped wired; anything needing an account, a bill, a domain or a human eye is documented instead | That line is drawn explicitly in the generated `infra/README.md`. A deployment step on the first side that a user has to write by hand is a bug in this template. |
+
+**With `deploy_target=aws-ecs-express`** the stack creates a VPC in Express Mode's own shape —
+public subnets for the load balancer and the tasks, no NAT gateway, isolated subnets with no route
+out for the database — an ECS cluster, an ECR repository, CloudWatch log groups with a
+retention, Secrets Manager secrets referenced by pinned `VersionId`, an Express service that
+provisions its own HTTPS load balancer, and five IAM roles: infrastructure, execution and runtime for
+ECS, and `deploy` and `preview` for CI, both trusting GitHub's OIDC token for exactly this
+repository. With `use_postgres` it adds RDS PostgreSQL 16 behind `rds.force_ssl` and a Fargate
+migration task CD runs before every deploy. The bootstrap script creates the S3 state bucket, its
+KMS key and the account's GitHub OIDC provider — all three account-level and shared, so the stack
+only looks them up — and a React app deployed into the same account shares them. Express Mode does not
+scale to zero: one task and the load balancer bill while idle, and the generated `infra/README.md`
+has the cost table.
 
 `infra/README.md` in the generated repository is the ordered list of what a human has to do, from
-installing `gcloud` to setting branch protection, and it marks the step where money starts. It also
+installing `gcloud` or `aws` to setting branch protection, and it marks the step where money starts. It also
 says why `just infra-up` prompts and how to run it unattended — `just infra-up dev --yes`. The
 recipe passes flags through rather than passing `--yes` itself, because the one command in this
 repository that creates billable resources should not auto-approve.
 
 ### The secret scan, and the one false positive it ships with
 
-`pulumi stack init --secrets-provider=gcpkms://…` writes `secretsprovider` and `encryptedkey` into
+`pulumi stack init --secrets-provider=gcpkms://…` (or `awskms://…`) writes `secretsprovider` and `encryptedkey` into
 `Pulumi.<stack>.yaml`. `encryptedkey` is a base64 blob, gitleaks' `generic-api-key` rule cannot
 tell it from a credential, and the first push of a generated repository fails on it. So the
 template ships `.gitleaks.toml`, read by both the CI job and the pre-commit hook.

@@ -11,11 +11,13 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
-{%- if cookiecutter.include_frontend == "yes" %}
 from fastapi.middleware.cors import CORSMiddleware
-{%- endif %}
 
+{% if cookiecutter.use_postgres == "yes" -%}
+from app.api.router import build_api_router
+{%- else -%}
 from app.api.router import api_router
+{%- endif %}
 from app.api.v1 import health
 from app.core.config import Settings, get_settings
 {%- if cookiecutter.use_postgres == "yes" %}
@@ -74,24 +76,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     register_exception_handlers(app)
-{%- if cookiecutter.include_frontend == "yes" %}
 
-    # The SPA is served from a different origin than the API — a different port locally, a
-    # different host deployed — so without this every request from the browser fails preflight
-    # and the network tab is the only place that says why. Configured, never wildcarded: an
-    # empty CORS_ORIGINS means no browser may call this API, which is the safe default for a
-    # deployment that has no web client.
+    # A browser client is served from a different origin than the API — a different port locally,
+    # a different host deployed — so without this every request from it fails preflight and the
+    # network tab is the only place that says why. Configured, never wildcarded: an empty
+    # CORS_ORIGINS means no browser may call this API, which is the safe default for a service with
+    # no web client. Starlette runs it outside the exception handlers, so the error responses they
+    # write carry the headers too; a browser shown a 401 without them reports a CORS failure
+    # instead of the 401.
     if settings.cors_origin_list:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origin_list,
             allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+            # Listed, not "*". A header the web client starts sending — a tracing header, say — is
+            # added here, or its preflight fails. X-Requested-With is the CSRF header the cookie
+            # routes require (`app/api/refresh_cookie.py`).
+            allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+            max_age=600,
         )
-{%- endif %}
     app.include_router(health.router)
+{%- if cookiecutter.use_postgres == "yes" %}
+    # Which login, refresh, logout and change-password routes exist depends on REFRESH_TRANSPORT,
+    # so the router is built from the settings rather than imported ready-made.
+    app.include_router(build_api_router(settings), prefix=settings.api_v1_prefix)
+{%- else %}
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+{%- endif %}
 
     return app
 

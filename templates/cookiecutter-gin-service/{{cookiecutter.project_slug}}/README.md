@@ -33,7 +33,7 @@ Pulumi program under `infra/` is the exception: it needs Go and the `pulumi` CLI
 ├── .env.example             # stack-wide configuration
 ├── .gitleaks.toml           # secret-scan config: default rules, plus two allowlisted lines
 ├── infra/                   # Pulumi (Go): the cloud resources — see infra/README.md
-│   ├── bootstrap/           # plain gcloud; creates the Pulumi state bucket, and removes it again
+│   ├── bootstrap/           # plain {% if cookiecutter.deploy_target == "aws-ecs-express" %}aws CLI{% else %}gcloud{% endif %}; creates the Pulumi state bucket, and removes it again
 │   ├── scripts/             # copies stack outputs into GitHub repository variables
 │   └── pulumi/              # the program, its components and their unit tests
 └── backend/                 # the Gin service
@@ -72,25 +72,38 @@ Repositories are the only code that touches `internal/db`. `internal/app` is the
 object graph is assembled. `just lint` enforces the import rules mechanically with
 golangci-lint's `depguard`.
 
-## The HTTP contract, and the web client
+## The HTTP contract, and browser clients
 
 This backend answers the same HTTP contract as the FastAPI service template — routes, status codes,
-field names, the error envelope, the refresh cookie and the OpenAPI document at `/openapi.json`. So
-that template's React `frontend/` drops in without an edit. Where the refresh token travels is a
-setting, `REFRESH_TRANSPORT`: `body` for API clients, `cookie` for a browser, with the CSRF check
-and CORS that a cookie needs. `infra/README.md` lists the steps for adding the web client, including
-the one switch in the Pulumi stack that deploys it.
+field names, the error envelope, the refresh cookie and the OpenAPI document at `/openapi.json`.
+This repository is backend only. A browser client is generated from the handbook's
+`cookiecutter-react-app` template into a repository of its own, with its own stack and pipelines,
+and pointed at this API: its `API_URL` is this stack's `service_url`, and this stack's
+`corsOrigins` lists its `site_url`.{% if cookiecutter.use_postgres == "yes" %} Where the refresh token travels is a setting, `REFRESH_TRANSPORT`
+(`refreshTransport` in the stack): `body` for API clients, `cookie` for a browser, with the CSRF
+check and CORS that a cookie needs. A browser session survives a reload only with the client and
+the API on one site — a domain you own; on the default hostnames, signing in works and a reload
+signs out.{% endif %} `infra/README.md` has the steps.
 
 ## Deploying
 
+{% if cookiecutter.deploy_target == "aws-ecs-express" -%}
+`infra/` declares the AWS resources in Pulumi: an ECS Express Mode service behind its own HTTPS
+load balancer{% if cookiecutter.use_postgres == "yes" %}, RDS for PostgreSQL{% endif %}, and the IAM roles CI assumes without a stored
+credential. `.github/workflows/cd.yml` builds an immutable `:sha` image{% if cookiecutter.use_postgres == "yes" %}, runs the migrations as a
+one-off ECS task,{% endif %} and updates one field on the service — the image. It is **inert until
+configured**: the job is gated on the repository variable `AWS_DEPLOY_ROLE_ARN`, which the stack
+exports and `just infra-sync-github` sets.
+{%- else -%}
 `infra/` declares the cloud resources in Pulumi. `.github/workflows/cd.yml` builds an immutable
 `:sha` image, runs the migrations as a Cloud Run job, and updates one field on the service — the
 image tag. It is **inert until configured**: every job is gated on the repository variable
 `WIF_PROVIDER`, which the stack exports and `just infra-sync-github` sets.
+{%- endif %}
 
 **[infra/README.md](infra/README.md) is the order it has to happen in**, and it draws the line
-between what this repository ships ready to run and what only you can do — a GCP project with
-billing, reading the preview before the first apply, populating the secret containers, a domain,
+between what this repository ships ready to run and what only you can do — {% if cookiecutter.deploy_target == "aws-ecs-express" %}an AWS account{% else %}a GCP project{% endif %} with
+billing, reading the preview before the first apply, populating the secret {% if cookiecutter.deploy_target == "aws-ecs-express" %}values{% else %}containers{% endif %}, a domain,
 and branch protection.
 
 ```bash
@@ -104,10 +117,17 @@ just infra-teardown       # then the state bucket and KMS key, which the stack n
 ```
 
 **Taking it down is two commands, and the second one is not optional.** `pulumi destroy` removes
-what the stack created; the state bucket and the KMS key came from the bootstrap script before the
+what the stack created; the state bucket and the KMS key{% if cookiecutter.deploy_target == "aws-ecs-express" %} — and the account's GitHub
+OIDC provider —{% endif %} came from the bootstrap script before the
 stack existed, so Pulumi has never known about them. `just infra-teardown` removes them, and
 refuses while any stack still holds a resource.
-{%- if cookiecutter.use_postgres == "yes" %}
+{%- if cookiecutter.deploy_target == "aws-ecs-express" %}
+
+**Nothing here scales to zero.** Express Mode runs at least one task behind a load balancer that
+bills by the hour{% if cookiecutter.use_postgres == "yes" %}, and RDS bills by the hour whether or not anyone connects{% endif %}. The settings are
+already the cheapest ones that work; `infra/README.md` says what each one is and what the floor
+costs you.
+{%- elif cookiecutter.use_postgres == "yes" %}
 
 **Cloud SQL is the only thing here that bills while idle**, and its settings are already the
 cheapest ones that work. `infra/README.md` says what each one is and what the floor costs you.
@@ -120,14 +140,14 @@ Three places, and the distinction is the security boundary. Nothing moves betwee
 | Kind | Set in | Read by | Examples |
 | --- | --- | --- | --- |
 | Local development | `.env`, copied from `.env.example` and never committed | Compose and the service on your machine | `ENVIRONMENT`, `JSON_LOGS`{% if cookiecutter.use_postgres == "yes" %}, `POSTGRES_*`, `REFRESH_TRANSPORT`{% endif %} |
-| Deploy configuration | GitHub repository **variables** | `.github/workflows/cd.yml` | `WIF_PROVIDER`, `DEPLOY_SA`, `GCP_REGION`, `IMAGE_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_MIGRATE_JOB` |
-| Runtime secrets | Secret Manager | the Cloud Run revision, as an environment variable | {% if cookiecutter.use_postgres == "yes" %}`DATABASE_URL_OVERRIDE`, `JWT_SECRET`{% endif %}{% if cookiecutter.use_postgres == "yes" and cookiecutter.use_sentry == "yes" %}, {% endif %}{% if cookiecutter.use_sentry == "yes" %}`SENTRY_DSN`{% endif %} |
+| Deploy configuration | GitHub repository **variables** | `.github/workflows/cd.yml` | {% if cookiecutter.deploy_target == "aws-ecs-express" %}`AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`, `IMAGE_REPO`, `ECS_CLUSTER`, `ECS_SERVICE_ARN`, `ECS_MIGRATE_TASK_FAMILY`{% else %}`WIF_PROVIDER`, `DEPLOY_SA`, `GCP_REGION`, `IMAGE_REPO`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_MIGRATE_JOB`{% endif %} |
+| Runtime secrets | {% if cookiecutter.deploy_target == "aws-ecs-express" %}Secrets Manager | the ECS task, as an environment variable pinned to one version |{% else %}Secret Manager | the Cloud Run revision, as an environment variable |{% endif %} {% if cookiecutter.use_postgres == "yes" %}`DATABASE_URL_OVERRIDE`, `JWT_SECRET`{% endif %}{% if cookiecutter.use_postgres == "yes" and cookiecutter.use_sentry == "yes" %}, {% endif %}{% if cookiecutter.use_sentry == "yes" %}`SENTRY_DSN`{% endif %} |
 
 {% if cookiecutter.use_postgres == "yes" %}The stack generates the first two and nobody ever types either: the database DSN, and `JWT_SECRET`
 — 48 random characters minted by Pulumi, mounted on the service and on nothing else. The migration
-job is deliberately not granted the signing key; it signs nothing. A deployed server refuses to
+{% if cookiecutter.deploy_target == "aws-ecs-express" %}task{% else %}job{% endif %} is deliberately not granted the signing key; it signs nothing. A deployed server refuses to
 start with the local sentinel key, or with one under 32 characters.{% endif %}{% if cookiecutter.use_sentry == "yes" %}
-`SENTRY_DSN` is the one a human fills in, from a container the stack creates empty.{% endif %}
+`SENTRY_DSN` is the one a human fills in, from {% if cookiecutter.deploy_target == "aws-ecs-express" %}a secret{% else %}a container{% endif %} the stack creates empty.{% endif %}
 
 No secret value belongs in a file in this repository. `gitleaks` enforces that on every push and in
 a pre-commit hook, reading `.gitleaks.toml` at the root. That file extends the default rule set
@@ -140,5 +160,5 @@ allowlist the line, never the path.
 - [infra/README.md](infra/README.md) — the deployment order and what only a human can do
 - `AGENTS.md` — the map for coding agents; `backend/AGENTS.md` for the service itself
 - Ask Athena for the rules this repository is built to: the Gin standards, backend layering,
-  containerization, GitHub Actions, Cloud Run and Pulumi. Retrieve them by topic rather than by
+  containerization, GitHub Actions, {% if cookiecutter.deploy_target == "aws-ecs-express" %}{% else %}Cloud Run and {% endif %}Pulumi. Retrieve them by topic rather than by
   path — the handbook is served against the question you actually have.

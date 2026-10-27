@@ -1,0 +1,26 @@
+name: {{ cookiecutter.project_slug }}
+# TypeScript, the application's own language (ADR-0020). Pulumi runs index.ts through the ts-node
+# and TypeScript in this directory's node_modules, so `pnpm install` here comes before any pulumi
+# command — infra/README.md.
+runtime:
+  name: nodejs
+  options:
+    packagemanager: pnpm
+description: Infrastructure for {{ cookiecutter.project_name }}.
+
+# Self-managed state in S3, created by infra/bootstrap/state-bucket.sh before the first `up`.
+# Not Pulumi Cloud: a bucket in the same account is one fewer vendor relationship, and the house
+# rule is that state lives in a bucket the program does not create, versioned and KMS-encrypted —
+# in the cloud it describes (ADR-0021). One bucket per account and region, shared by every service
+# and every site deployed there; each Pulumi project gets its own directory under .pulumi/stacks/.
+#
+# Locking needs no DynamoDB table: the backend writes a lock object under .pulumi/locks/ for the
+# length of every update, and refuses to start one while another update's lock is there.
+backend:
+  url: s3://pulumi-state-{{ cookiecutter.aws_account_id }}-{{ cookiecutter.aws_region }}?region={{ cookiecutter.aws_region }}
+
+config:
+  # One explicit provider, configured in src/stack.ts. A default provider would pick up whatever
+  # AWS profile and region the shell happens to have and make two machines plan differently.
+  pulumi:disable-default-providers:
+    value: ["aws"]

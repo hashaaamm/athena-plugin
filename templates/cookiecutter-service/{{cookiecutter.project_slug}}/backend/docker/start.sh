@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The production container's start command. `docker/Dockerfile.prod` ends in
 # `CMD ["/app/docker/start.sh"]` and that is the only caller: CD deploys by updating the image
-# (`gcloud run services update --image`), the Pulumi service component sets no `commands`, and
+# ({% if cookiecutter.deploy_target == "aws-ecs-express" %}`aws ecs update-express-gateway-service`{% else %}`gcloud run services update --image`{% endif %}), the Pulumi service component sets no `commands`, and
 # Compose only overrides the command on the *dev* image. Nothing overrides this one, so what is
 # written here is what production runs.
 #

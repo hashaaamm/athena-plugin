@@ -1,0 +1,100 @@
+import {
+  CheckCircle,
+  Cube,
+{%- if cookiecutter.include_auth == "yes" %}
+  Database,
+{%- endif %}
+  WarningCircle,
+} from "@phosphor-icons/react";
+
+import { StatCard } from "@/components/stat-card";
+import { Spinner } from "@/components/ui/spinner";
+import { useReadiness } from "@/lib/api/health";
+import { formatBuildVersion } from "@/lib/format";
+
+/**
+ * The first screen. It exists to answer one question on arrival — is the backend there — and to
+ * be deleted. Replace it with whatever this product's home page actually is.
+ */
+export function DashboardPage() {
+  const readiness = useReadiness();
+
+  const healthy = readiness.data?.status === "ok";
+  const version = readiness.data?.version;
+
+  return (
+    <div className="mx-auto max-w-[1080px] px-10 pb-[60px] pt-8">
+      <h1 className="text-[26px] font-bold tracking-[-0.03em] text-ink">Dashboard</h1>
+      <p className="mt-1 text-[13.5px] text-subtext">
+        A generated starting point. Everything on this page is an example of a pattern, not a
+        feature worth keeping.
+      </p>
+
+      {/* One column, then the full row at `md`. A two-then-three breakpoint ladder leaves the
+          last card alone on its own row for most of the viewport range. */}
+{%- if cookiecutter.include_auth == "yes" %}
+      <div className="mt-7 grid grid-cols-1 gap-4 md:grid-cols-3">
+{%- else %}
+      <div className="mt-7 grid grid-cols-1 gap-4 md:grid-cols-2">
+{%- endif %}
+        <StatCard
+          label="Backend"
+          value={readiness.isError ? "Unreachable" : healthy ? "Ready" : "Degraded"}
+          Icon={healthy ? CheckCircle : WarningCircle}
+          caption={readiness.isError ? "No answer from the API" : "GET /health/ready"}
+          tone={healthy ? "success" : "warning"}
+          loading={readiness.isPending}
+        />
+        {/* The deployed value is a full commit SHA. Shortened here and kept in full in the
+            title, because forty monospace characters do not fit in a stat card. */}
+        <StatCard
+          label="Version"
+          value={formatBuildVersion(version)}
+          valueTitle={version}
+          Icon={Cube}
+          caption="The build answering right now"
+          loading={readiness.isPending}
+        />
+{%- if cookiecutter.include_auth == "yes" %}
+        <StatCard
+          label="Database"
+          value={readiness.data?.database === "ok" ? "Connected" : "Unavailable"}
+          Icon={Database}
+          caption="Checked on every readiness probe"
+          tone={readiness.data?.database === "ok" ? "success" : "warning"}
+          loading={readiness.isPending}
+        />
+{%- endif %}
+      </div>
+
+      <div className="mt-6 rounded-2xl border border-hairline bg-surface p-[26px]">
+        <h2 className="text-[15px] font-semibold text-ink">What is already wired up</h2>
+        <ul className="mt-3 space-y-2 text-[13.5px] leading-relaxed text-body">
+          <li>
+            A typed API client generated from the backend&rsquo;s own OpenAPI document. Run{" "}
+            <code className="rounded bg-subtle px-1 py-[1px] font-mono text-[12.5px]">
+              just gen-api
+            </code>{" "}
+            after every API change; a removed field becomes a compile error, not a blank cell.
+          </li>
+          <li>
+            TanStack Query for every read and write, with the cache keys in one object per
+            resource.
+          </li>
+          <li>
+            TanStack Router with the route tree in <code>src/router.tsx</code>, a 404 screen and
+            an error screen that keeps this sidebar mounted.
+          </li>
+          <li>Tailwind v4 and shadcn/ui, with the palette in <code>src/index.css</code>.</li>
+          <li>Vitest and Testing Library, with the suite in <code>just test</code>.</li>
+        </ul>
+        {readiness.isFetching && (
+          <div className="mt-4 flex items-center gap-2 text-[12.5px] text-mute">
+            <Spinner size={13} />
+            Checking the backend…
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

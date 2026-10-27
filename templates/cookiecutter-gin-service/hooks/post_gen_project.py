@@ -27,6 +27,29 @@ USE_POSTGRES = "{{ cookiecutter.use_postgres }}" == "yes"
 USE_SENTRY = "{{ cookiecutter.use_sentry }}" == "yes"
 SLUG = "{{ cookiecutter.project_slug }}"
 
+DEPLOY_TARGET = "{{ cookiecutter.deploy_target }}"
+
+
+def _select_deploy_target() -> None:
+    """Move the chosen target's stack and pipelines into place, and drop every other target.
+
+    Each target under deploy/ is a complete implementation of the same interface: an infra/
+    directory whose justfile has the same recipes (lock, test, lint, preview, up, sync-github,
+    destroy, teardown), and the deploy workflows those recipes un-gate. The generated repository
+    has exactly one of them, at the paths every other file already refers to — infra/ and
+    .github/workflows/ — so nothing outside deploy/ needs to know which target was chosen.
+    """
+    deploy = PROJECT / "deploy"
+    chosen = deploy / DEPLOY_TARGET
+    if not chosen.is_dir():
+        raise SystemExit(f"unknown deploy_target {DEPLOY_TARGET!r}: no deploy/{DEPLOY_TARGET}/")
+    shutil.move(chosen / "infra", PROJECT / "infra")
+    workflows = PROJECT / ".github" / "workflows"
+    for workflow in sorted((chosen / "workflows").iterdir()):
+        shutil.move(workflow, workflows / workflow.name)
+    shutil.rmtree(deploy)
+
+
 # --- backend -------------------------------------------------------------------------------------
 
 #: No database means no migrations, no queries, no generated data layer — and no users, so no
@@ -63,21 +86,39 @@ BACKEND_WITHOUT_SENTRY: tuple[str, ...] = ("backend/internal/observability",)
 
 # --- infra ---------------------------------------------------------------------------------------
 
-#: Nothing to provision a database for. The rest of the stack is unchanged: a service, a registry,
-#: two identities and the secret containers it reads. The shared files — main.go, the config, the
-#: API list, the runtime roles — branch in Jinja instead, because they exist either way.
-INFRA_WITHOUT_POSTGRES: tuple[str, ...] = (
-    "infra/pulumi/internal/components/database.go",
-    "infra/pulumi/internal/components/database_test.go",
-    "infra/pulumi/main_postgres_test.go",
-)
+# Keyed by deploy target, because each target is its own stack with its own file list. The paths
+# are the generated ones: _select_deploy_target() has already moved the chosen target to infra/.
 
-#: The stack keeps no Sentry resource of its own beyond one empty secret container, which the
-#: Jinja in secrets.go already leaves out; only the tests about it go.
-INFRA_WITHOUT_SENTRY: tuple[str, ...] = (
-    "infra/pulumi/internal/components/sentry_test.go",
-    "infra/pulumi/main_sentry_test.go",
-)
+#: Nothing to provision a database for. The rest of the stack is unchanged: a service, a registry,
+#: the identities and the secrets it reads. The shared files — main.go, the config, the API list,
+#: the runtime roles — branch in Jinja instead, because they exist either way. On AWS the
+#: migration task definition goes too: with no database there is nothing for it to migrate.
+INFRA_WITHOUT_POSTGRES: dict[str, tuple[str, ...]] = {
+    "gcp-cloud-run": (
+        "infra/pulumi/internal/components/database.go",
+        "infra/pulumi/internal/components/database_test.go",
+        "infra/pulumi/main_postgres_test.go",
+    ),
+    "aws-ecs-express": (
+        "infra/pulumi/internal/components/database.go",
+        "infra/pulumi/internal/components/database_test.go",
+        "infra/pulumi/internal/components/migrations.go",
+        "infra/pulumi/main_postgres_test.go",
+    ),
+}
+
+#: The stack keeps no Sentry resource of its own beyond one empty secret, which the Jinja in
+#: secrets.go already leaves out; only the tests about it go.
+INFRA_WITHOUT_SENTRY: dict[str, tuple[str, ...]] = {
+    "gcp-cloud-run": (
+        "infra/pulumi/internal/components/sentry_test.go",
+        "infra/pulumi/main_sentry_test.go",
+    ),
+    "aws-ecs-express": (
+        "infra/pulumi/internal/components/sentry_test.go",
+        "infra/pulumi/main_sentry_test.go",
+    ),
+}
 
 
 def _remove(*relative_paths: str) -> None:
@@ -90,10 +131,13 @@ def _remove(*relative_paths: str) -> None:
 
 
 def main() -> None:
+    # First, so every path below is the one the generated repository has.
+    _select_deploy_target()
+
     if not USE_POSTGRES:
-        _remove(*BACKEND_WITHOUT_POSTGRES, *INFRA_WITHOUT_POSTGRES)
+        _remove(*BACKEND_WITHOUT_POSTGRES, *INFRA_WITHOUT_POSTGRES[DEPLOY_TARGET])
     if not USE_SENTRY:
-        _remove(*BACKEND_WITHOUT_SENTRY, *INFRA_WITHOUT_SENTRY)
+        _remove(*BACKEND_WITHOUT_SENTRY, *INFRA_WITHOUT_SENTRY[DEPLOY_TARGET])
 
     for relative in EXECUTABLE:
         target = PROJECT / relative

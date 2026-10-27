@@ -6,11 +6,12 @@ rules.
 
 | Subtree | Rules | What it is |
 | --- | --- | --- |
-| `backend/` | [backend/AGENTS.md](backend/AGENTS.md) | FastAPI service, Postgres, Cloud Run |
+| `backend/` | [backend/AGENTS.md](backend/AGENTS.md) {% if cookiecutter.deploy_target == "aws-ecs-express" %}| FastAPI service, Postgres, ECS Express Mode |{% else %}| FastAPI service, Postgres, Cloud Run |{% endif %}
 | `infra/` | [infra/README.md](infra/README.md) | Pulumi (Python): the cloud resources and the order they are created in |
-{%- if cookiecutter.include_frontend == "yes" %}
-| `frontend/` | [frontend/AGENTS.md](frontend/AGENTS.md) | React + TypeScript SPA (Vite, TanStack, Tailwind) |
-{%- endif %}
+
+This repository is the API only. A browser client is a separate repository, generated from
+`cookiecutter-react-app`; this one serves it once `corsOrigins`{% if cookiecutter.use_postgres == "yes" %} and `refreshTransport`{% endif %} are set in the
+stack — the "A browser client" section of `README.md` has the keys and their limits.
 
 ## What this service is
 
@@ -27,11 +28,6 @@ does not know this will make architecturally wrong choices confidently.>>
   `docker/`, its own `justfile`.
 - **`infra/`** holds the Pulumi stack, its bootstrap script and its own Python toolchain. It
   describes where this repository runs. It is a sibling of `backend/`, not a part of it.
-{%- if cookiecutter.include_frontend == "yes" %}
-- **`frontend/`** holds the web client and only the web client: its `package.json`, its Vite and
-  ESLint configuration, its own `justfile` and its production image. It talks to the backend
-  through a client **generated** from the backend's OpenAPI document — never a hand-written type.
-{%- endif %}
 
 Adding a component means adding a directory and one line to the root `justfile`. It never means
 moving what is already here.
@@ -48,9 +44,6 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 | One test | `just test-one tests/test_health.py::test_ready_reports_dependencies` |
 | Lint, types, layer contracts | `just lint` |
 | Everything CI runs | `just check` |
-{%- if cookiecutter.include_frontend == "yes" %}
-| Regenerate the frontend's API client | `just gen-api` (after every backend API change) |
-{%- endif %}
 | Unit-test the Pulumi stack | `just infra-test` |
 | See what an apply would change | `just infra-preview` |
 {%- if cookiecutter.use_postgres == "yes" %}
@@ -64,9 +57,6 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 
 - [ ] `just check` passes
 - [ ] A new endpoint has router + service + repository + schemas + tests
-{%- if cookiecutter.include_frontend == "yes" %}
-- [ ] An API change was followed by `just gen-api`, in the same commit
-{%- endif %}
 {%- if cookiecutter.use_postgres == "yes" %}
 - [ ] The migration has a working `downgrade()` and the history has one head
 {%- endif %}
@@ -78,7 +68,7 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
 - Do not disable a lint rule, add `# type: ignore`, or delete a test to get to green. Surface the
   conflict instead.
 - Do not modify `.github/workflows/` without saying so explicitly in your summary.
-- Do not run `gcloud` mutations or anything that changes cloud state. That includes
+{% if cookiecutter.deploy_target == "aws-ecs-express" %}- Do not run `aws` mutations or anything that changes cloud state.{% else %}- Do not run `gcloud` mutations or anything that changes cloud state.{% endif %} That includes
   `just infra-up` and `just infra-sync-github`, and the bootstrap script. `just infra-test` and
   `just infra-preview` are the two that change nothing; everything else under `infra/` needs a
   human who has read the preview.
@@ -86,7 +76,7 @@ Always use `just`, from the repository root. Never invent a raw `docker compose`
   guards on them. The teardown script deletes the Pulumi state bucket, which is irreversible and
   is the only record of what exists; it refuses without a terminal and without the bucket name
   typed back, and that is the point of it.
-- Do not put a secret value in `infra/`. The stack creates empty containers; a person fills them.
+- Do not put a secret value in `infra/`. {% if cookiecutter.deploy_target == "aws-ecs-express" %}The stack creates empty secrets; a person fills them.{% else %}The stack creates empty containers; a person fills them.{% endif %}
 
 ## Recurring failures
 

@@ -1,0 +1,22 @@
+name: {{ cookiecutter.project_slug }}
+runtime:
+  name: python
+  options:
+    toolchain: uv
+description: Infrastructure for {{ cookiecutter.project_name }}.
+
+# Self-managed state in S3, created by infra/bootstrap/state-bucket.sh before the first `up`, and
+# encrypted with the KMS key the same script creates (ADR-0021: state lives in the target cloud).
+# Not Pulumi Cloud: a bucket in the same account is one fewer vendor relationship, and the house
+# rule is that state lives in a bucket the program does not create, versioned and KMS-encrypted.
+#
+# No DynamoDB lock table. Pulumi's self-managed backend locks with objects of its own under
+# `.pulumi/locks/` in this bucket, so two concurrent `up`s against one stack refuse each other.
+backend:
+  url: s3://pulumi-state-{{ cookiecutter.aws_account_id }}-{{ cookiecutter.aws_region }}?region={{ cookiecutter.aws_region }}
+
+config:
+  # One explicit provider, configured in stack.py. A default provider would pick up whatever
+  # profile and region the shell happens to have and make two machines plan differently.
+  pulumi:disable-default-providers:
+    value: ["aws"]

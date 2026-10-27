@@ -1,0 +1,178 @@
+# Build the bundle and publish it: S3 behind CloudFront.
+#
+# Inert until configured: the job is gated on `vars.AWS_DEPLOY_ROLE_ARN`, so a freshly generated
+# repository has a reviewed deploy path that cannot fire by accident. Set the repository variables
+# below and it starts working — no edit to this file required.
+#
+#   AWS_DEPLOY_ROLE_ARN         arn:aws:iam::<account>:role/<slug>-deploy-<env>
+#   AWS_REGION                  eu-west-1
+#   SITE_BUCKET                 the private bucket the bundle is uploaded to
+#   CLOUDFRONT_DISTRIBUTION_ID  the distribution in front of it, for the invalidation
+#   SITE_URL                    https://<id>.cloudfront.net, for the smoke test
+#   API_URL                     the backend's address — compiled INTO the bundle, see below
+#
+# All but the last are exported by `infra/pulumi` and copied in by `./infra/scripts/sync-github.sh`,
+# so the names on both sides cannot drift; infra/pulumi/tests/contract.test.ts asserts the match.
+# API_URL is the one a human sets, because it belongs to another repository's stack.
+#
+# **The ordering that makes this correct.** Vite inlines VITE_* at build time, so the API origin is
+# compiled into the JavaScript and nothing done to the bucket or the distribution afterwards can
+# change it. A bundle built without one would call the local development address, deploy cleanly,
+# serve a page and answer nothing — so the first step refuses to build instead.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. Nothing here may contain a cookiecutter variable; anything
+# project-specific comes from a repository variable instead.
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'tsconfig*.json'
+      - 'vite.config.ts'
+      - '.github/workflows/cd.yml'
+  # Also the way to rebuild after API_URL changes: nothing in the repository has to change for the
+  # deployed bundle to be wrong.
+  workflow_dispatch:
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # required for the GitHub OIDC token the deploy role trusts
+
+jobs:
+  deploy:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+    # The deploy role trusts a token whose subject is this environment and nothing else. Give the
+    # environment protection rules in the repository settings; they are the gate on a deploy.
+    environment: production
+    env:
+      BUCKET: ${{ vars.SITE_BUCKET }}
+      DISTRIBUTION: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+      SITE_URL: ${{ vars.SITE_URL }}
+    steps:
+      # Resolved before anything is built, because the alternative is discovering it from a browser
+      # console after the deploy reported success. Read through `env:` rather than interpolated
+      # into the script: a repository variable is untrusted input to a shell otherwise.
+      - name: Resolve the API origin
+        id: origin
+        env:
+          API_URL: ${{ vars.API_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$API_URL" ]; then
+            echo "::error::API_URL is not set, so this build would compile the local development" \
+                 "address into the bundle. Set the repository variable to the backend's URL" \
+                 "(infra/README.md), then re-run this workflow."
+            exit 1
+          fi
+          echo "url=$API_URL" >> "$GITHUB_OUTPUT"
+          echo "the bundle will call $API_URL"
+
+      - uses: actions/checkout@v4
+      # Reads the pinned version from package.json's `packageManager` field.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        env:
+          VITE_API_URL: ${{ steps.origin.outputs.url }}
+        run: pnpm build
+
+      # Keyless: an access key in a repository secret is a long-lived credential in a file, and the
+      # handbook bans them outright. GitHub's OIDC token is exchanged for a session of an hour.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v4` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Two syncs, because the two halves of a Vite build want opposite caching and `aws s3 sync`
+      # sets one Cache-Control per invocation.
+      #
+      # assets/ first. Every file in it is named for a hash of its content, so a name never means two
+      # things: it is cached for a year and never revalidated. Uploaded before the index, and
+      # without --delete, so for the whole of this step the live index.html still finds every file
+      # it names — the previous deploy's and this one's are side by side.
+      #
+      # Then everything else — index.html above all — with no-cache, which a browser and CloudFront
+      # both revalidate on every request: the index is the map to the hashed files, and a cached
+      # copy pins a visitor to a deploy whose files are about to go. --delete here, with assets/
+      # excluded, removes root files the build no longer produces and leaves the hashed files alone.
+      - name: Upload
+        run: |
+          set -euo pipefail
+          aws s3 sync dist/assets/ "s3://$BUCKET/assets/" \
+            --cache-control "public,max-age=31536000,immutable" --only-show-errors
+          aws s3 sync dist/ "s3://$BUCKET/" \
+            --exclude "assets/*" --cache-control "no-cache" --delete --only-show-errors
+          echo "uploaded $(find dist -type f | wc -l | tr -d ' ') files to s3://$BUCKET"
+
+      # The edge may still hold the previous index for its minimum TTL. An invalidation clears it,
+      # and is not instant: it can take minutes. So the wait is a loop with a deadline rather than
+      # `aws cloudfront wait invalidation-completed`, whose fixed cap is shorter than a slow
+      # invalidation and turns a deploy that succeeded into a red run.
+      - name: Invalidate the index
+        run: |
+          set -euo pipefail
+          ID=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION" \
+            --paths "/index.html" "/" --query Invalidation.Id --output text)
+          echo "invalidation $ID"
+          DEADLINE=$((SECONDS + 1200))
+          while :; do
+            STATUS=$(aws cloudfront get-invalidation --distribution-id "$DISTRIBUTION" --id "$ID" \
+              --query Invalidation.Status --output text)
+            if [ "$STATUS" = "Completed" ]; then break; fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::invalidation $ID is still $STATUS after 20 minutes"; exit 1
+            fi
+            sleep 15
+          done
+          echo "invalidated"
+
+      # The previous deploy's hashed files go only now, once the index that named them is no longer
+      # served. Same command as the upload's first half plus --delete: nothing is re-uploaded,
+      # because every file in dist/assets/ is already there.
+      - name: Prune the previous deploy's assets
+        run: |
+          set -euo pipefail
+          aws s3 sync dist/assets/ "s3://$BUCKET/assets/" \
+            --cache-control "public,max-age=31536000,immutable" --delete --only-show-errors
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          # The index: the distribution answers, over HTTPS, from the bucket.
+          code=$(curl -s -o /tmp/index.html -w '%{http_code}' "$SITE_URL/")
+          [ "$code" = "200" ] || { echo "::error::$SITE_URL/ answered $code"; exit 1; }
+
+          # And it is THIS build's index: it names the entry script this run just built.
+          ENTRY=$(grep -o 'assets/[^"]*\.js' dist/index.html | head -1)
+          grep -q "$ENTRY" /tmp/index.html || { echo "::error::$SITE_URL/ does not serve $ENTRY"; exit 1; }
+
+          # A route the bucket has no object for. It must still answer 200 with the index — that is
+          # the distribution's SPA fallback, and without it every hard refresh on a real route is an
+          # error page that only the person who bookmarked it ever sees.
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$SITE_URL/some/deep/route")
+          [ "$code" = "200" ] || { echo "::error::$SITE_URL/some/deep/route answered $code"; exit 1; }
+          echo "serving: $SITE_URL"

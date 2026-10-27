@@ -2,14 +2,14 @@
 # minutes. Ask Athena for the local development and command runner rules.
 #
 # This file is at the repository ROOT, not in backend/, because it orchestrates more than one
-# component: today the database and the backend, tomorrow a web client alongside them. A compose
-# file per component cannot express "the frontend waits for the backend to be healthy".
+# component: the database and the backend. A compose file per component cannot express "the
+# backend waits for the database to be healthy".
 
 name: {{ cookiecutter.project_slug }}
 
 services:
-  # Named `backend` and listening on 8000 on purpose: a React client generated from the FastAPI
-  # template fetches http://backend:8000/openapi.json to build its types, and drops in unchanged.
+  # Published on 8000 on purpose: a browser client generated from cookiecutter-react-app calls
+  # http://localhost:8000 by default (its `api_url`).
   backend: &backend
     build:
       context: ./backend

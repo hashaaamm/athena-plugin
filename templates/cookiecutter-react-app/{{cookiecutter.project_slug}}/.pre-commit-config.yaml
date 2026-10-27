@@ -1,0 +1,8 @@
+# Fast, deterministic checks only. Lint, type checking and tests belong in `just check` and CI —
+# a slow hook gets bypassed with --no-verify, and then so do the useful ones.
+# Ask Athena for the local development and command runner rules.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.23.1
+    hooks:
+      - id: gitleaks

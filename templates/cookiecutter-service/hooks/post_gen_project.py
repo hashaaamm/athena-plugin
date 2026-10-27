@@ -28,10 +28,31 @@ EXECUTABLE = (
     "infra/scripts/sync-github.sh",
 )
 
-INCLUDE_FRONTEND = "{{ cookiecutter.include_frontend }}" == "yes"
 USE_POSTGRES = "{{ cookiecutter.use_postgres }}" == "yes"
 USE_SENTRY = "{{ cookiecutter.use_sentry }}" == "yes"
 SLUG = "{{ cookiecutter.project_slug }}"
+
+DEPLOY_TARGET = "{{ cookiecutter.deploy_target }}"
+
+
+def _select_deploy_target() -> None:
+    """Move the chosen target's stack and pipelines into place, and drop every other target.
+
+    Each target under deploy/ is a complete implementation of the same interface: an infra/
+    directory whose justfile has the same recipes (lock, test, lint, preview, up, sync-github,
+    destroy, teardown), and the deploy workflows those recipes un-gate. The generated repository
+    has exactly one of them, at the paths every other file already refers to — infra/ and
+    .github/workflows/ — so nothing outside deploy/ needs to know which target was chosen.
+    """
+    deploy = PROJECT / "deploy"
+    chosen = deploy / DEPLOY_TARGET
+    if not chosen.is_dir():
+        raise SystemExit(f"unknown deploy_target {DEPLOY_TARGET!r}: no deploy/{DEPLOY_TARGET}/")
+    shutil.move(chosen / "infra", PROJECT / "infra")
+    workflows = PROJECT / ".github" / "workflows"
+    for workflow in sorted((chosen / "workflows").iterdir()):
+        shutil.move(workflow, workflows / workflow.name)
+    shutil.rmtree(deploy)
 
 
 def _remove(*relative_paths: str) -> None:
@@ -44,21 +65,8 @@ def _remove(*relative_paths: str) -> None:
 
 
 def main() -> None:
-    if not INCLUDE_FRONTEND:
-        # The backend does not reference frontend/ anywhere, so removing it is a clean cut.
-        # Adding it back later means creating the directory, not restructuring the repo.
-        # Both its workflows and its CORS test go with it: a pipeline filtered on a path that does
-        # not exist never runs and never says so, and CORS is only a question once a browser asks.
-        # So does the refresh cookie. With no browser client the refresh token travels in the JSON
-        # body, and a cookie transport nobody calls is CSRF surface with no user.
-        _remove(
-            "frontend",
-            ".github/workflows/frontend-ci.yml",
-            ".github/workflows/frontend-cd.yml",
-            "backend/tests/test_cors.py",
-            "backend/app/api/refresh_cookie.py",
-            "backend/tests/test_refresh_cookie.py",
-        )
+    # First, so every path below is the one the generated repository has.
+    _select_deploy_target()
 
     if not USE_SENTRY:
         _remove("backend/app/core/observability.py")
@@ -84,6 +92,8 @@ def main() -> None:
         _remove(
             "backend/app/api/refresh_cookie.py",
             "backend/app/api/v1/auth.py",
+            "backend/app/api/v1/auth_body.py",
+            "backend/app/api/v1/auth_cookie.py",
             "backend/app/core/security",
             "backend/app/models/refresh_session.py",
             "backend/app/models/user.py",
@@ -103,47 +113,23 @@ def main() -> None:
             "backend/tests/test_tokens.py",
             "backend/tests/test_unit_of_work.py",
         )
-        # The web client's half of the same cut. A sign-in form posting to an endpoint that was
-        # deleted three paragraphs ago is worse than no sign-in form: it compiles, it renders,
-        # and it fails in a browser. The shared files — router, shell, API client, README and
-        # AGENTS.md — branch in Jinja instead, because they exist either way. Harmless when
-        # `include_frontend` is "no": frontend/ has already gone and `_remove` skips what is
-        # not there. The dashboard's route test goes with them: it asserts the guard and mounts
-        # the real tree through `test-router.tsx`, and neither exists here. What that page still
-        # owns without a database — the shortened build identifier — is covered by the unit test
-        # in `lib/format.test.ts`, which every variant keeps.
-        _remove(
-            "frontend/src/components/auth-card.tsx",
-            "frontend/src/lib/api/auth.ts",
-            "frontend/src/lib/api/auth.test.ts",
-            "frontend/src/lib/auth.ts",
-            "frontend/src/lib/auth.test.ts",
-            "frontend/src/lib/use-session.ts",
-            "frontend/src/routes/account.tsx",
-            "frontend/src/routes/account.test.tsx",
-            "frontend/src/routes/dashboard.test.tsx",
-            "frontend/src/routes/login.tsx",
-            "frontend/src/routes/login.test.tsx",
-            "frontend/src/routes/register.tsx",
-            "frontend/src/routes/register.test.tsx",
-            "frontend/src/test-router.tsx",
-        )
         # No database means nothing to provision one for. The rest of the stack is unchanged:
-        # a service, a registry, two identities and the secrets it reads.
-        _remove("infra/pulumi/components/database.py")
+        # a service, a registry, its identities and the secrets it reads. The AWS target also has
+        # a migration task of its own, in a component the GCP target does not have; `_remove`
+        # skips whichever of the two paths the chosen target never had.
+        _remove(
+            "infra/pulumi/components/database.py",
+            "infra/pulumi/components/migrations.py",
+        )
 
     for relative in EXECUTABLE:
         target = PROJECT / relative
         if target.exists():
             target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    #: Neither lockfile is templated — a committed one would pin whatever existed when the
-    #: template was last touched — and every image build installs with a --frozen flag, so the
-    #: first command in a new project is always resolving them.
-    frontend_lock = (
-        "    (cd frontend && just lock)     # same, for pnpm-lock.yaml\n" if INCLUDE_FRONTEND else ""
-    )
-
+    #: The lockfile is not templated — a committed one would pin whatever existed when the
+    #: template was last touched — and every image build installs with --frozen, so the first
+    #: command in a new project is always resolving it.
     sys.stdout.write(
         "\n"
         f"  Created {SLUG}/\n"
@@ -152,7 +138,6 @@ def main() -> None:
         "\n"
         f"    cd {SLUG} && cp .env.example .env\n"
         "    (cd backend && uv lock)        # the lockfile is not templated; resolve it once\n"
-        f"{frontend_lock}"
         "    just dev\n"
         "\n"
         "  Then: just check\n"

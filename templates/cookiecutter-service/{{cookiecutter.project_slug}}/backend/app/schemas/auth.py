@@ -87,11 +87,8 @@ class UserRead(BaseModel):
     updated_at: dt.datetime
 
 
-{%- if cookiecutter.include_frontend == "no" %}
-
-
 class RefreshRequest(BaseModel):
-    """Spend a refresh token for a new pair."""
+    """Spend a refresh token for a new pair. `REFRESH_TRANSPORT=body` only."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -103,20 +100,21 @@ class RefreshRequest(BaseModel):
 
 
 class LogoutRequest(BaseModel):
-    """End the session a refresh token belongs to."""
+    """End the session a refresh token belongs to. `REFRESH_TRANSPORT=body` only."""
 
     model_config = ConfigDict(extra="forbid")
 
     refresh_token: SecretStr = Field(
         description="Any refresh token from the session to end. Its whole family is revoked."
     )
-{%- endif %}
 
 
 class TokenPairRead(BaseModel):
     """A new session, or the next step of one: an access token and the refresh token behind it.
 
-    What login, refresh and change-password return. The refresh token in it is single-use —
+    What `AuthService` returns from login, refresh and change-password, and what the body transport
+    returns as it is. The cookie transport splits it: the refresh token into the cookie, the rest
+    into `AccessTokenRead`. The refresh token in it is single-use —
     spending it at `POST /auth/refresh` revokes it and returns the next pair, and presenting it a
     second time revokes every token descended from the same sign-in.
     """
@@ -128,11 +126,11 @@ class TokenPairRead(BaseModel):
     #: Sent even though the client could read `exp` out of the token, because a client that has to
     #: decode a JWT to know when to refresh is a client that will decode it without verifying it.
     expires_in: int = Field(description="Seconds until the access token expires.", examples=[900])
-{%- if cookiecutter.include_frontend == "yes" %}
 
 
 class AccessTokenRead(BaseModel):
-    """What the browser receives: the access token, and not the refresh token.
+    """What the browser receives under `REFRESH_TRANSPORT=cookie`: the access token, and not the
+    refresh token.
 
     The refresh token travels as an httpOnly cookie instead — see `app/api/refresh_cookie.py` — so
     no script running in the page can read it. Putting it in this body as well would undo that.
@@ -144,4 +142,3 @@ class AccessTokenRead(BaseModel):
     #: Sent even though the client could read `exp` out of the token, because a client that has to
     #: decode a JWT to know when to refresh is a client that will decode it without verifying it.
     expires_in: int = Field(description="Seconds until the access token expires.", examples=[900])
-{%- endif %}

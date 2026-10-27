@@ -1,10 +1,11 @@
 """The refresh token as an httpOnly cookie: set, read, cleared, and defended against CSRF.
 
-This service has a browser client, and a browser has nowhere to keep a credential that script in
-the page cannot read — except a cookie marked `HttpOnly`. So the refresh token never appears in a
-response body here. Login, refresh and change-password set it as a cookie and return only the
-access token, which the web client holds in memory; refresh and logout read it back from the
-cookie. Ask Athena about browser token storage for why this shape and not `sessionStorage`.
+The transport `REFRESH_TRANSPORT=cookie` selects, for a browser client; the routes that use it are
+`app/api/v1/auth_cookie.py`. A browser has nowhere to keep a credential that script in the page
+cannot read — except a cookie marked `HttpOnly`. So the refresh token never appears in a response
+body here. Login, refresh and change-password set it as a cookie and return only the access token,
+which the web client holds in memory; refresh and logout read it back from the cookie. Ask Athena
+about browser token storage for why this shape and not `sessionStorage`.
 
 **The attributes, and what each one is for:**
 
@@ -14,6 +15,7 @@ cookie. Ask Athena about browser token storage for why this shape and not `sessi
 * `SameSite` — `strict` by default: not attached to any request a third-party page starts. It needs
   the SPA and the API on one *site*; see `refresh_cookie_samesite` in `app/core/config.py`.
 * `Path` — the auth routes only. No other endpoint reads the cookie, so no other request carries it.
+* No `Domain` — host-only, so no other subdomain ever receives it.
 
 **CSRF.** A cookie is attached to requests the browser makes whoever started them, which is the
 whole difference between it and a bearer header. Refresh and logout are the only routes that read

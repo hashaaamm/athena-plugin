@@ -3,16 +3,15 @@
 # Ask Athena for the local development and command runner rules.
 #
 # This justfile owns the things that span components (the stack, CI's gate) and DELEGATES
-# everything language-specific to backend/justfile and frontend/justfile. Another component is
-# another delegation line — the command vocabulary here never grows.
+# everything language-specific to backend/justfile. Another component is another delegation line —
+# the command vocabulary here never grows.
 {% raw %}
 set shell := ["bash", "-uc"]
 
 compose := "docker compose"
 ci      := "docker compose -f docker-compose.ci.yml"
 backend := "just --justfile backend/justfile --working-directory backend"
-{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}frontend := "just --justfile frontend/justfile --working-directory frontend"
-{% endraw %}{% endif %}{% raw %}
+
 # `just` defaults the working directory to the justfile's own directory, so backend recipes run
 # from backend/ exactly as they would if you cd'd there. Stated explicitly rather than inherited.
 
@@ -55,22 +54,14 @@ check: _env lint test
 # Lint, format check, type check and layer contracts, for every component
 lint: _env
     {{backend}} lint
-{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} lint
-{% endraw %}{% endif %}{% raw %}
 
 # Apply formatting and safe autofixes, for every component
 fmt: _env
     {{backend}} fmt
-{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} fmt
-{% endraw %}{% endif %}{% raw %}
 
-# Run the full test suite in parallel. ARGS reach the backend suite; the frontend's runs whole,
-# because pytest node ids and vitest file paths are not the same vocabulary. Target a single
-# frontend test with `cd frontend && just test-one <file>`.
+# Run the full test suite in parallel. ARGS reach the backend suite.
 test *ARGS: _env
     {{backend}} test {{ARGS}}
-{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} test
-{% endraw %}{% endif %}{% raw %}
 
 # Run one test file or node, verbose and fail-fast
 test-one TARGET:
@@ -79,15 +70,6 @@ test-one TARGET:
 # Dependency vulnerability scan
 audit: _env
     {{backend}} audit
-{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}
-# --- API client ----------------------------------------------------------
-
-# Regenerate the frontend's typed API client from the backend's OpenAPI document.
-# Run it in the SAME change as the backend edit that motivated it — a client regenerated later
-# is a client that was wrong in between. The stack must be up (`just dev` in another terminal).
-gen-api: _env
-    {{frontend}} gen-api
-{% endraw %}{% endif %}{% raw %}
 
 # --- Database ------------------------------------------------------------
 {% endraw %}{% if cookiecutter.use_postgres == "yes" %}{% raw %}
@@ -123,8 +105,6 @@ db-reset: _env
 # Build the production images
 build:
     {{backend}} build
-{% endraw %}{% if cookiecutter.include_frontend == "yes" %}{% raw %}    {{frontend}} build
-{% endraw %}{% endif %}{% raw %}
 
 # --- Infrastructure ------------------------------------------------------
 #
@@ -140,7 +120,7 @@ infra-test:
 infra-lint:
     cd infra/pulumi && uv run ruff check . && uv run ruff format --check . && uv run mypy .
 
-# --refresh on the next two recipes is load-bearing, not hygiene. CD updates the Cloud Run image
+# --refresh on the next two recipes is load-bearing, not hygiene. CD updates the {% endraw %}{% if cookiecutter.deploy_target == "aws-ecs-express" %}Express service's{% else %}Cloud Run{% endif %}{% raw %} image
 # out of band; without a refresh, Pulumi's state still holds the previous image, ignore_changes has
 # nothing to preserve, and the next apply rolls the service back to it.
 

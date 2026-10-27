@@ -7,7 +7,12 @@ deny by default, enforced where routers are aggregated rather than route by rout
 the authorization rules; they grade that **MUST**.
 
 Adding a resource is one line. Put it on `private` unless you can say out loud why an anonymous
-caller may have it, and notice that the file where you make that choice is five lines long.
+caller may have it, and notice that the function where you make that choice is short.
+
+Built from the settings rather than at import, because `REFRESH_TRANSPORT` decides which half of
+the authentication routes exist: `auth_body` (the default — the refresh token in the JSON body)
+or `auth_cookie` (an httpOnly cookie, for a browser client). Mounting only one means the OpenAPI
+document, and every client generated from it, describes the transport this deployment speaks.
 
 The health probes are not here: they are mounted unprefixed in `app/main.py`, because a load
 balancer does not know about `/api/v1`.
@@ -17,25 +22,38 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.v1 import auth
+from app.api.v1 import auth, auth_body, auth_cookie
+from app.core.config import Settings
 from app.core.security.actor import get_current_actor
 
-#: No bearer token required. Today: register, login, refresh and logout — the first two are how a
-#: caller gets a credential, and the last two take a refresh token, which is never a bearer one.
-public = APIRouter()
-public.include_router(auth.public_router)
 
-#: A verified access token required, for every route on it.
-private = APIRouter(dependencies=[Depends(get_current_actor)])
-private.include_router(auth.private_router)
+def build_api_router(settings: Settings) -> APIRouter:
+    """Every versioned route, split into the open ones and the authenticated ones."""
+    # No bearer token required. Today: register, login, refresh and logout — the first two are how
+    # a caller gets a credential, and the last two take a refresh token, which is never a bearer
+    # one.
+    public = APIRouter()
+    public.include_router(auth.public_router)
 
-# from app.api.v1 import <resource>
-#
-# private.include_router(<resource>.router)
+    # A verified access token required, for every route on it.
+    private = APIRouter(dependencies=[Depends(get_current_actor)])
+    private.include_router(auth.private_router)
 
-api_router = APIRouter()
-api_router.include_router(public)
-api_router.include_router(private)
+    if settings.refresh_transport == "cookie":
+        public.include_router(auth_cookie.public_router)
+        private.include_router(auth_cookie.private_router)
+    else:
+        public.include_router(auth_body.public_router)
+        private.include_router(auth_body.private_router)
+
+    # from app.api.v1 import <resource>
+    #
+    # private.include_router(<resource>.router)
+
+    api_router = APIRouter()
+    api_router.include_router(public)
+    api_router.include_router(private)
+    return api_router
 {%- else -%}
 """Aggregates the versioned routers. One place to see the whole HTTP surface.
 

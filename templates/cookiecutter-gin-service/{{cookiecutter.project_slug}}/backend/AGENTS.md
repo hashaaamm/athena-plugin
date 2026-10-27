@@ -13,7 +13,7 @@ Read [../AGENTS.md](../AGENTS.md) first, and ask Athena for the standards a chan
 | Auth | golang-jwt v5 (HS256), Argon2id (`golang.org/x/crypto/argon2`) |
 {%- endif %}
 | API docs | swaggo annotations → Swagger 2.0 → OpenAPI 3 (`cmd/openapi`), served at `/docs` and `/openapi.json` outside production |
-| Runtime | Cloud Run, region `{{ cookiecutter.gcp_region }}`, project `{{ cookiecutter.gcp_project_id }}`; distroless static image, one binary |
+| Runtime | {% if cookiecutter.deploy_target == "aws-ecs-express" %}ECS Express Mode on Fargate, region `{{ cookiecutter.aws_region }}`, account `{{ cookiecutter.aws_account_id }}`{% else %}Cloud Run, region `{{ cookiecutter.gcp_region }}`, project `{{ cookiecutter.gcp_project_id }}`{% endif %}; distroless static image, one binary |
 {%- if cookiecutter.use_sentry == "yes" %}
 | Error tracking | Sentry (DSN empty locally, by rule) |
 {%- endif %}

@@ -21,8 +21,10 @@ ORIGIN = "http://localhost:3000"
 
 @pytest.fixture
 async def browser(client_for: ClientFactory) -> AsyncIterator[AsyncClient]:
-    """The app as the browser meets it: CORS configured for the SPA's origin."""
-    async with client_for(Settings(environment="test", cors_origins=ORIGIN)) as client:
+    """The app as a browser client meets it: the cookie transport, with CORS configured for the
+    client's origin."""
+    settings = Settings(environment="test", refresh_transport="cookie", cors_origins=ORIGIN)
+    async with client_for(settings) as client:
         yield client
 
 

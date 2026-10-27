@@ -1,0 +1,22 @@
+# Node — the application's, and infra/pulumi's, which is a project of its own
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+# pnpm's content-addressable store. It normally lives under $HOME, but pnpm puts it beside the
+# project whenever the two are on different drives — which is every `just dev`, because the
+# container installs into a bind mount. Tens of thousands of package files then land in
+# `git add .`, and the secret scan reports a minified dependency as a leak on the first push.
+.pnpm-store/
+
+# Local environment. `.env.example` is tracked; `.env` never is.
+# Ask Athena for the secrets-management rules.
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

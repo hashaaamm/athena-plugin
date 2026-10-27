@@ -1,0 +1,70 @@
+# The dev stack. Cheapest viable configuration at every layer.
+#
+# `pulumi stack init dev --secrets-provider="awskms://alias/pulumi-state?region=..."` records
+# `secretsprovider` and `encryptedkey` in this file alongside the configuration below. The
+# bootstrap script prints the exact command. Every key below is read in one place:
+# internal/stackconfig/config.go.
+config:
+  # The provider refuses credentials for any other account — the wrong-account guard. Set it to
+  # the account this stack deploys into; one account per environment is the recommendation, so a
+  # `prod` stack names a different number.
+  {{ cookiecutter.project_slug }}:accountId: "{{ cookiecutter.aws_account_id }}"
+  {{ cookiecutter.project_slug }}:region: {{ cookiecutter.aws_region }}
+  # The STACK's environment. All it does is name resources — `{{ cookiecutter.project_slug }}-dev`,
+  # and every role, secret and repository with the same suffix. The application never sees it.
+  {{ cookiecutter.project_slug }}:environment: dev
+  # The APPLICATION's environment: the `ENVIRONMENT` variable on the ECS task, and one of
+  # local / test / staging / production. It decides how the service behaves — `production`
+  # serves no `/docs` and no `/openapi.json`. Separate from the line above because a stack called
+  # `dev` that the whole company can reach is production to the application, and a stack called
+  # `prod` standing up a demo is not. Set it to `production` in the stack real users reach.
+  {{ cookiecutter.project_slug }}:appEnvironment: staging
+  # Every resource name is built from this, so it is not decoration: changing it renames the
+  # Express service, the ECR repository, the roles and the VPC.
+  {{ cookiecutter.project_slug }}:slug: {{ cookiecutter.project_slug }}
+  # The CI roles trust tokens from exactly this repository. Anything else here means some other
+  # repository can deploy.
+  {{ cookiecutter.project_slug }}:githubRepository: {{ cookiecutter.github_repository }}
+  # The start of the `sub` claim GitHub issues for that repository. Empty means the name-only form,
+  # repo:{{ cookiecutter.github_repository }}. Many repositories now get the immutable form with
+  # numeric ids instead, and a trust policy for the wrong form admits no token at all. Ask GitHub:
+  #   gh api repos/{{ cookiecutter.github_repository }}/actions/oidc/customization/sub --jq .sub_claim_prefix
+  # and paste what it prints. sync-github.sh checks the two agree before it un-gates CD.
+  {{ cookiecutter.project_slug }}:githubSubjectPrefix: ""
+  # Express Mode cannot scale to zero: one task runs, and bills, whether or not anyone calls it.
+  {{ cookiecutter.project_slug }}:minTasks: "1"
+  {{ cookiecutter.project_slug }}:maxTasks: "4"
+  # A quarter vCPU and 512 MiB, the smallest Fargate size. Fargate accepts only fixed pairs;
+  # stackconfig.FargateSizes is the list, and anything else is refused when the stack loads.
+  {{ cookiecutter.project_slug }}:cpu: "256"
+  {{ cookiecutter.project_slug }}:memory: "512"
+  # Two is the minimum Express Mode and an RDS subnet group accept. Three buys one more zone the
+  # service survives losing, at the price of one more load-balancer node and its public address.
+  {{ cookiecutter.project_slug }}:availabilityZoneCount: "2"
+  # Browser origins allowed to call the API, comma-separated; CORS_ORIGINS on the service. Empty
+  # means no browser on another origin may call it. A browser client is generated from
+  # templates/cookiecutter-react-app into its own repository with its own stack (ADR-0022): put
+  # that stack's `site_url` output here.
+  {{ cookiecutter.project_slug }}:corsOrigins: ""
+{%- if cookiecutter.use_postgres == "yes" %}
+  # Where the refresh token travels; REFRESH_TRANSPORT on the service. `body` for a server-to-server
+  # caller, `cookie` for a browser client, and `cookie` needs corsOrigins. A session that survives a
+  # reload also needs the SPA and the API on one site — your own domain. The default hostnames are
+  # two sites (`cloudfront.net` and `on.aws`), so signing in works and a reload signs out.
+  {{ cookiecutter.project_slug }}:refreshTransport: body
+{%- endif %}
+{%- if cookiecutter.use_postgres == "yes" %}
+  # RDS for PostgreSQL. The smallest Graviton burstable class on the gp3 floor, in one AZ, is the
+  # cheapest managed Postgres AWS offers, and with the running task it is the standing charge in
+  # this stack. infra/README.md has what each value is and what moving off it buys.
+  {{ cookiecutter.project_slug }}:databaseInstanceClass: db.t4g.micro
+  {{ cookiecutter.project_slug }}:databaseStorageGb: "20"
+  {{ cookiecutter.project_slug }}:databaseMultiAz: "false"
+{%- endif %}
+{%- if cookiecutter.use_sentry == "yes" %}
+  # Set to the VersionId that
+  # `aws secretsmanager put-secret-value --secret-id {{ cookiecutter.project_slug }}-sentry-dsn-dev --secret-string <dsn>`
+  # prints. Until then the secret is empty and nothing mounts it, because a secret with no value
+  # is a task that cannot start rather than a service that starts without error tracking.
+  {{ cookiecutter.project_slug }}:sentryDsnVersion: ""
+{%- endif %}

@@ -1,0 +1,242 @@
+# Build, push and deploy the backend to ECS Express Mode.
+#
+# Inert until configured: the job is gated on `vars.AWS_DEPLOY_ROLE_ARN`, so a freshly generated
+# repo has a reviewed deploy path that cannot fire by accident. Set the repository variables below
+# and it starts working — no edit to this file required.
+#
+#   AWS_DEPLOY_ROLE_ARN      arn:aws:iam::<account>:role/<slug>-deploy-<env>
+#   AWS_REGION               eu-west-1
+#   IMAGE_REPO               <account>.dkr.ecr.<region>.amazonaws.com/<slug>-<env>
+#   ECS_CLUSTER              the cluster the service and the migration task run in
+#   ECS_SERVICE              the Express service's name, for following its rollout
+#   ECS_SERVICE_ARN          the Express service's ARN, for describe and update
+#   SERVICE_URL              https://<generated>.ecs.<region>.on.aws, for the smoke test
+#   ECS_TASK_SUBNETS         comma-separated subnet ids the migration task runs in
+#   ECS_TASK_SECURITY_GROUP  the security group the database admits
+#   ECS_MIGRATE_TASK_FAMILY  the task definition family that runs `alembic upgrade head` (unset if
+#                            there is no database)
+#
+# Do not set them by hand. `infra/pulumi` exports every one of them and
+# `./infra/scripts/sync-github.sh` copies them in, so the names on both sides cannot drift — a
+# stack exporting `deploy_role` to a pipeline reading `vars.AWS_DEPLOY_ROLE_ARN` is a job that is
+# skipped forever and never says why. A unit test in infra/pulumi/tests asserts the match.
+#
+# Every repository variable reaches a shell through `env:`, never interpolated into the script: a
+# repository variable is input to a shell like any other, and quoting it is the shell's job.
+#
+# Copied verbatim by cookiecutter — see the note in ci.yml.
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/cd.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write    # the OIDC token the deploy role is assumed with
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+    # The deploy role trusts this environment and nothing else in the repository — its trust
+    # policy names `repo:<owner>/<repo>:environment:production` — so this line is what lets the
+    # job assume it. Protection rules on the environment are where a required reviewer goes.
+    environment: production
+    env:
+      IMAGE: ${{ vars.IMAGE_REPO }}:${{ github.sha }}
+      CLUSTER: ${{ vars.ECS_CLUSTER }}
+      SERVICE: ${{ vars.ECS_SERVICE }}
+      SERVICE_ARN: ${{ vars.ECS_SERVICE_ARN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless: an access key in a CI secret is a long-lived credential in a file, and the
+      # handbook bans them outright. This exchanges GitHub's OIDC token for a one-hour session on
+      # the deploy role.
+      #
+      # The house rule on third-party actions is a released major version at minimum and a pinned
+      # digest for anything handling credentials. This is that anything: replace `@v4` with
+      # `@<sha>` before you rely on this pipeline, and record the version the digest corresponds to
+      # in a comment beside it.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # The same rule: pin a digest before you rely on it.
+      - name: Authenticate to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/docker/Dockerfile.prod
+          target: production
+          platforms: linux/amd64
+          push: true
+          # An immutable :sha tag, never :latest — and the repository refuses to move a tag that
+          # exists. A rollback is then a known image rather than a guess about what :latest
+          # pointed at last Tuesday.
+          tags: ${{ vars.IMAGE_REPO }}:${{ github.sha }}
+          build-args: GIT_SHA=${{ github.sha }}
+          # An explicit scope, so another image built in this repository does not evict these
+          # layers from the one GitHub Actions cache.
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend   # mode=max caches the builder stage too
+
+      # Migrations run before the new image takes traffic, and are expected to be
+      # backward-compatible with the currently-deployed code. Ask Athena for the database access
+      # and migrations rules for what "backward-compatible" has to mean here.
+      #
+      # The stack owns the task definition's shape — command, roles, the database secret, logs. This
+      # step registers a new revision derived from the latest ACTIVE one with only the image
+      # changed, runs it once in the service's own subnets and security group, and fails the deploy
+      # unless it exited 0. Nothing else about the revision is this pipeline's to decide.
+      - name: Migrate
+        if: vars.ECS_MIGRATE_TASK_FAMILY != ''
+        env:
+          FAMILY: ${{ vars.ECS_MIGRATE_TASK_FAMILY }}
+          SUBNETS: ${{ vars.ECS_TASK_SUBNETS }}
+          SECURITY_GROUP: ${{ vars.ECS_TASK_SECURITY_GROUP }}
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition --task-definition "$FAMILY" \
+            --query taskDefinition --output json > current.json
+
+          # Read-only fields describe returns and register refuses. Everything else is sent back
+          # exactly as the stack declared it.
+          jq --arg image "$IMAGE" '
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                .registeredAt, .registeredBy, .deregisteredAt)
+            | .containerDefinitions[0].image = $image
+          ' current.json > revision.json
+          TASK_DEFINITION=$(aws ecs register-task-definition --cli-input-json file://revision.json \
+            --query taskDefinition.taskDefinitionArn --output text)
+          echo "registered $TASK_DEFINITION"
+
+          TASK=$(aws ecs run-task --cluster "$CLUSTER" --launch-type FARGATE \
+            --task-definition "$TASK_DEFINITION" \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          if [ -z "$TASK" ] || [ "$TASK" = "None" ]; then
+            echo "::error::run-task started nothing — see the failures above"; exit 1
+          fi
+          echo "started $TASK"
+
+          # Polls every 6 seconds for up to 10 minutes. A migration that takes longer than that on
+          # a deploy is a migration that should have been a backfill.
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+
+          aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" --output json > stopped.json
+          EXIT_CODE=$(jq -r '.tasks[0].containers[0].exitCode // "none"' stopped.json)
+          if [ "$EXIT_CODE" != "0" ]; then
+            REASON=$(jq -r '.tasks[0].stoppedReason // "" ' stopped.json)
+            echo "::error::migration exited $EXIT_CODE. $REASON"
+            # The task's own log, here rather than a console link the reader may not be able to
+            # open. The stream is `<prefix>/<container>/<task id>`, and the group and prefix are
+            # the ones the stack wrote into the task definition.
+            GROUP=$(jq -r '.containerDefinitions[0].logConfiguration.options["awslogs-group"]' revision.json)
+            PREFIX=$(jq -r '.containerDefinitions[0].logConfiguration.options["awslogs-stream-prefix"]' revision.json)
+            CONTAINER=$(jq -r '.containerDefinitions[0].name' revision.json)
+            aws logs get-log-events --log-group-name "$GROUP" \
+              --log-stream-name "$PREFIX/$CONTAINER/${TASK##*/}" \
+              --query 'events[].message' --output text | tr '\t' '\n' || true
+            exit 1
+          fi
+          echo "migrated"
+
+      # Update one field. The shape of the service — roles, secrets, scaling, network — belongs to
+      # infrastructure-as-code; this pipeline owns exactly the image. The container definition is
+      # read back and sent whole with only the image changed, because the API does not document
+      # what a partial `primaryContainer` would leave behind, and dropping the secrets or the log
+      # configuration on a deploy is not a failure anybody would see until it mattered.
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          aws ecs describe-express-gateway-service --service-arn "$SERVICE_ARN" --output json |
+            jq --arg image "$IMAGE" \
+              '.service.activeConfigurations[0].primaryContainer | .image = $image | del(.. | nulls)' \
+              > primary-container.json
+          # The deployment running now, so the wait below can tell it from the one this update starts.
+          BEFORE=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].deployments[?status==`PRIMARY`] | [0].id' --output text)
+          aws ecs update-express-gateway-service --service-arn "$SERVICE_ARN" \
+            --primary-container file://primary-container.json >/dev/null
+
+          # Wait on the new deployment's own rollout state, not on the generic services-stable waiter.
+          # An Express deployment is a canary with a bake time — a healthy one took 10 min 40 s on
+          # its first real run, and that waiter gives up at ten. The rollout state also reads FAILED
+          # the moment ECS rolls back, so a broken image fails this job in minutes, not at a timeout.
+          # The previous deployment is excluded by id, or its COMPLETED would end the wait at once.
+          DEADLINE=$((SECONDS + 1800))
+          while :; do
+            DEPLOYMENTS=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+              --query 'services[0].deployments[].[id, status, rolloutState]' --output text)
+            if awk -v before="$BEFORE" '$1 != before && $3 == "FAILED"' <<<"$DEPLOYMENTS" | grep -q .; then
+              aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+                --query 'services[0].events[:5].message' --output text | tr '\t' '\n'
+              echo "::error::$SERVICE rolled back: the new deployment failed"; exit 1
+            fi
+            if awk -v before="$BEFORE" '$1 != before && $2 == "PRIMARY" && $3 == "COMPLETED"' \
+              <<<"$DEPLOYMENTS" | grep -q .; then
+              break
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::$SERVICE's rollout did not finish in 30 minutes"; exit 1
+            fi
+            sleep 20
+          done
+
+          # Completed is not the same as "running this image": a rollback also completes. Confirm
+          # the update is the one that landed.
+          aws ecs describe-express-gateway-service --service-arn "$SERVICE_ARN" --output json |
+            jq -e --arg image "$IMAGE" \
+              '[.service.activeConfigurations[].primaryContainer.image] | index($image) != null' \
+              >/dev/null || { echo "::error::$SERVICE is stable but not running $IMAGE"; exit 1; }
+          echo "deployed $IMAGE"
+
+      - name: Smoke test
+        env:
+          URL: ${{ vars.SERVICE_URL }}
+        run: |
+          set -euo pipefail
+
+          # Liveness is what this pipeline is responsible for: the new tasks started and serve.
+          curl -fsS "$URL/health/live" >/dev/null
+          echo "live: $URL"
+
+          # Readiness can depend on something this pipeline does not do — a dependency that is not
+          # up yet, a first-run backfill. Report it, do not fail on it: failing here means a
+          # service's first deploy can never succeed. Download to a file rather than piping into
+          # grep, which closes the pipe and kills curl under `pipefail` on a check that had passed.
+          code=$(curl -s -o /tmp/ready.json -w '%{http_code}' "$URL/health/ready")
+          cat /tmp/ready.json
+          if [ "$code" != "200" ]; then
+            echo "::warning::$URL is live but not ready — check its dependencies"
+          fi
+
+      # Without this, Sentry cannot attribute a regression to a commit.
+      - name: Create Sentry release
+        if: vars.SENTRY_ORG != ''
+        uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        with:
+          version: ${{ github.sha }}
+          environment: production
+          set_commits: auto

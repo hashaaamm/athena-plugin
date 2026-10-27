@@ -3,15 +3,16 @@
 > **This is a published copy.** It is generated from Athena's source and rewritten on every publish, so an edit made here is lost at the next one. Report a problem as an issue on the repository you found it in.
 
 A production-ready **Gin service in Go, in a monorepo-shaped repository**, with the Pulumi stack
-that deploys it to Cloud Run. It generates a repository whose backend already satisfies the
+that deploys it — to Cloud Run on GCP, or to ECS Express Mode on AWS, chosen at generation time by
+`deploy_target`. It generates a repository whose backend already satisfies the
 handbook's Gin standards — layering enforced by the linter, typed configuration, pgx with
 sqlc-generated queries, Goose migrations embedded in the binary, a distroless image, Cloud Run
 health endpoints, CI, and a CD pipeline that is inert until configured.
 
-**It answers the same HTTP contract as the FastAPI service template.** Same routes, status codes,
-field names, error envelope, refresh cookie and OpenAPI schema names — so that template's React
-`frontend/` drops into a generated Gin repository without an edit. One HTTP suite, run against both
-templates in CI, is what keeps that true.
+**It is backend only, and it answers the same HTTP contract as the FastAPI service template.** Same
+routes, status codes, field names, error envelope, refresh cookie and OpenAPI schema names — so a
+browser client generated from `cookiecutter-react-app` works against either backend. One HTTP suite,
+run against both templates in CI, is what keeps that true.
 
 **With a database, it ships the two health probes and six authentication endpoints** — register,
 login, refresh, logout, me, change password. They are the worked example of the layering and a
@@ -26,6 +27,9 @@ else**, because half an auth system is worse than none.
 uvx cookiecutter gh:hashaaamm/athena-plugin --directory templates/cookiecutter-gin-service   # interactive
 uvx cookiecutter --no-input gh:hashaaamm/athena-plugin --directory templates/cookiecutter-gin-service \
   project_name="Billing API" go_module="github.com/acme/billing-api"
+uvx cookiecutter --no-input gh:hashaaamm/athena-plugin --directory templates/cookiecutter-gin-service \
+  project_name="Billing API" go_module="github.com/acme/billing-api" \
+  deploy_target=aws-ecs-express aws_account_id=123456789012 aws_region=eu-west-1
 ```
 
 Then, in the generated repository:
@@ -54,27 +58,34 @@ tree in — ask Athena for merging a generated service into a repository that al
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `project_name` | `Example Service` | Human name. The OpenAPI title and the READMEs. |
-| `project_slug` | derived | Directory name, Compose project, Cloud Run service, refresh cookie prefix. |
+| `project_slug` | derived | Directory name, Compose project, the deployed service's name, refresh cookie prefix. |
 | `description` | … | One line. The OpenAPI description. |
 | `author` | `Your Name` | Attribution. |
 | `go_module` | `github.com/your-org/<slug>` | The module path both `go.mod` files declare and every import uses. Set it to the repository's real path. |
 | `go_version` | `1.27` | The `go` directive, the build images and CI's toolchain. |
-| `gcp_project_id` | `your-gcp-project` | The GCP project the Pulumi stack targets. Not in any workflow. |
-| `gcp_region` | `europe-west1` | Cloud Run, Cloud SQL and Artifact Registry all live here. |
-| `github_repository` | `your-org/<slug>` | `owner/repo`. Becomes the Workload Identity provider's attribute condition — the one line stopping any other repository from assuming the CI identity. |
+| `deploy_target` | `gcp-cloud-run` | Where the generated `infra/` and the deploy workflows deploy to. `gcp-cloud-run`: Cloud Run, Cloud SQL, Artifact Registry, Workload Identity Federation, state in GCS. `aws-ecs-express`: ECS Express Mode on Fargate, RDS for PostgreSQL, ECR, GitHub OIDC roles, state in S3 under AWS KMS. The generated repository holds exactly one; the other is not there to switch to later. |
+| `gcp_project_id` | `your-gcp-project` | `gcp-cloud-run` only. The GCP project the Pulumi stack targets. Not in any workflow. |
+| `gcp_region` | `europe-west1` | `gcp-cloud-run` only. Cloud Run, Cloud SQL and Artifact Registry all live here. |
+| `aws_account_id` | `123456789012` | `aws-ecs-express` only. Twelve digits, checked before anything is written. It names the state bucket, and the stack's provider refuses credentials for any other account. Not in any workflow. |
+| `aws_region` | `eu-west-1` | `aws-ecs-express` only. The VPC, the Express service, RDS, ECR and the state bucket all live here. |
+| `github_repository` | `your-org/<slug>` | `owner/repo`. On GCP it becomes the Workload Identity provider's attribute condition; on AWS, the `sub` the CI roles' trust policies require. Either way it is the one value stopping any other repository from assuming the CI identity. |
 | `use_postgres` | `yes` | `no` drops migrations, queries, the generated data layer, the database from Compose and the stack, readiness' database check **and the whole authentication example**. |
 | `use_sentry` | `yes` | `no` drops `sentry-go` and `internal/observability`. `yes` wires it with an **empty DSN by default** — local development reports nothing, by rule. |
 
-There is no frontend variable. The web client is the FastAPI template's `frontend/`, added by hand;
-the generated `infra/README.md` lists the steps, and the one Pulumi switch (`frontendEnabled`) that
-deploys it.
+There is no frontend variable. A browser client is its own repository, generated from
+`cookiecutter-react-app` with its own Pulumi stack and pipelines (ADR-0022). Pointing it at a
+generated service is stack configuration here: `corsOrigins` set to the client's `site_url`, and
+`refreshTransport=cookie` when the service has accounts. A session that survives a reload needs
+the client and the API on one site — a domain you own; the default `run.app`, `on.aws` and
+`cloudfront.net` hostnames are cross-site, so signing in works and a reload signs out. The
+generated `infra/README.md` has the steps.
 
 ## The brace traps this template handles explicitly
 
 Jinja's `{{ }}` collides with three things in this repository:
 
 1. **GitHub Actions' `${{ }}`.** `cookiecutter.json` declares `_copy_without_render:
-   [".github/workflows/*"]`, so **no workflow may contain a cookiecutter variable.** Everything
+   [".github/workflows/*", "deploy/*/workflows/*"]`, so **no workflow may contain a cookiecutter variable.** Everything
    project-specific comes from repository variables, which is also why CD is inert until
    configured. The Pulumi stack exports every variable name the workflows read, the sync script
    copies them in, and a test in `infra/pulumi` fails if the three disagree.
@@ -136,15 +147,32 @@ email verification, no rate limit on login, and no job deleting expired `refresh
 
 ## What the generated `infra/` gives you
 
-A Pulumi program **in Go** that has never been applied and is ready to be: service APIs, an Artifact
+Each deploy target lives under `{{cookiecutter.project_slug}}/deploy/<target>/` as a complete
+implementation of one interface — an `infra/` directory whose justfile has the same recipes, and the
+deploy workflows those recipes un-gate. The post-generation hook moves the chosen one to `infra/`
+and `.github/workflows/` and deletes the rest, so nothing outside `deploy/` refers to a target by
+path.
+
+**`gcp-cloud-run`.** A Pulumi program **in Go** that has never been applied and is ready to be: service APIs, an Artifact
 Registry repository with a cleanup policy, runtime and CI service accounts with no downloadable key,
 a Workload Identity pool scoped to one repository, Secret Manager containers, and a Cloud Run service
-that scales to zero — plus Cloud SQL and a migration job with a database, and the web client's Cloud
-Run service when `frontendEnabled` is set. The state bucket and KMS key come from a bootstrap script,
+that scales to zero — plus Cloud SQL and a migration job with a database. The state bucket and KMS key come from a bootstrap script,
 because a stack cannot create the store that holds its own state; secret values are never in code;
 the pipeline owns the image tag and nothing else; components are unit-tested with
 `pulumi.WithMocks` and no cloud credentials. The generated `infra/README.md` is the ordered list of
 what a human has to do, and marks the step where money starts.
+
+**`aws-ecs-express`.** The same shape on AWS, in the same Go: a VPC with public subnets for the
+tasks and isolated ones for the database and no NAT gateway, an ECR repository that is immutable
+and scanned, CloudWatch log groups that expire, an ECS cluster, an Express Mode service — task,
+HTTPS load balancer and scaling from one resource — on the placeholder image, Secrets Manager
+secrets pinned by version, an ECS infrastructure role, execution roles, an empty runtime role for
+the application, and two keyless GitHub roles: deploy, trusted from the `production` environment
+only, and a read-only preview — plus RDS for PostgreSQL and a migration task definition with a
+database. The bootstrap script creates the state bucket, its KMS key and the account's GitHub OIDC
+provider, all three shared by every service in the account. Nothing on this target scales to zero:
+Express Mode runs at least one task behind a load balancer, and the generated `infra/README.md`
+says so before it says anything else about cost.
 
 ## Maintaining this template
 

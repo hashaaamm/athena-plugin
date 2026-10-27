@@ -1,0 +1,102 @@
+# Infrastructure CI.
+#
+# The stack tests run on every pull request and need no cloud credentials — that is most of the
+# argument for Pulumi over HCL, so it is the cheapest and most-run job here. The preview needs
+# cloud access and is gated on the stack having been applied at least once; its diff is posted to
+# the pull request, because a preview nobody reads is not a review.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. Nothing here may contain a cookiecutter variable; anything
+# project-specific comes from a repository variable instead.
+name: Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+      # contract_test.go reads the deploy workflows, so changing one re-checks the names.
+      - '.github/workflows/cd.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+      - '.github/workflows/cd.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write        # required for the GitHub OIDC token the preview role trusts
+  pull-requests: write   # the preview comments its diff
+
+defaults:
+  run:
+    working-directory: infra/pulumi
+
+jobs:
+  static:
+    name: Vet, lint and stack tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: infra/pulumi/go.mod
+          cache-dependency-path: infra/pulumi/go.sum
+      # Fails loudly on a go.mod or go.sum that `just lock` would change — the Go equivalent of
+      # installing with a frozen lockfile. A missing go.sum fails here too: run `just lock` in
+      # infra/ and commit it.
+      - run: go mod tidy -diff
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          working-directory: infra/pulumi
+      - run: go test ./...
+
+  preview:
+    name: Preview
+    runs-on: ubuntu-latest
+    needs: [static]
+    # Inert until the stack has been applied once and sync-github.sh has set the variables. A
+    # preview against a stack that does not exist fails on state, not on the change under review.
+    # A pull request from a fork gets no id-token permission, so it cannot assume the preview
+    # role whatever this condition says; the role's trust policy is the guard, not this line.
+    if: github.event_name == 'pull_request' && vars.AWS_PREVIEW_ROLE_ARN != ''
+    steps:
+      - uses: actions/checkout@v4
+      # Pulumi compiles the Go program itself, so the preview needs the toolchain too.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: infra/pulumi/go.mod
+          cache-dependency-path: infra/pulumi/go.sum
+
+      # Keyless, and the PREVIEW role, not the deploy role: it reads the account and this
+      # project's state, and can change neither. Its trust policy admits a pull_request token from
+      # this repository and nothing else. Pin this to a digest rather than `@v4` before you rely on
+      # the pipeline: the house rule is a released major at minimum, and a pinned digest for
+      # anything that handles credentials.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PREVIEW_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Pulumi.yaml names the S3 backend, and the stack's secrets provider is the state key, so the
+      # role's credentials are all the preview needs — no Pulumi access token.
+      - uses: pulumi/actions@v6
+        with:
+          command: preview
+          stack-name: dev
+          work-dir: infra/pulumi
+          # Load-bearing, not hygiene. CD updates the Express service's image out of band; without
+          # a refresh Pulumi's state still holds the previous image, `ignoreChanges` has nothing
+          # to preserve, and the preview proposes rolling the service back to it.
+          refresh: true
+          # A destructive change must be visible in review, not discovered in apply output.
+          comment-on-pr: true
+          diff: true

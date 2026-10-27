@@ -10,7 +10,7 @@ Read [../AGENTS.md](../AGENTS.md) first, and ask Athena for the standards a chan
 {%- if cookiecutter.use_postgres == "yes" %}
 | Database | Postgres via SQLAlchemy 2.0 (async) + Alembic |
 {%- endif %}
-| Runtime | Cloud Run, region `{{ cookiecutter.gcp_region }}`, project `{{ cookiecutter.gcp_project_id }}` |
+{% if cookiecutter.deploy_target == "aws-ecs-express" %}| Runtime | ECS Express Mode on Fargate, region `{{ cookiecutter.aws_region }}`, account `{{ cookiecutter.aws_account_id }}` |{% else %}| Runtime | Cloud Run, region `{{ cookiecutter.gcp_region }}`, project `{{ cookiecutter.gcp_project_id }}` |{% endif %}
 {%- if cookiecutter.use_sentry == "yes" %}
 | Error tracking | Sentry (DSN empty locally, by rule) |
 {%- endif %}
@@ -36,7 +36,7 @@ which fails on a violation — the contracts are in `.importlinter`.
 
 {% if cookiecutter.use_postgres == "yes" -%}
 **Authentication is the worked example, and it runs through all four layers.**
-`app/api/v1/auth.py` binds input and calls one method on `AuthService`; the service owns every
+`app/api/v1/auth.py` and its two transport files bind input and call one method on `AuthService`; the service owns every
 rule about passwords, enumeration and sessions and hands back a Pydantic schema; `UserRepository`
 and `RefreshSessionRepository` own every query; `app/models/user.py` and
 `app/models/refresh_session.py` are the tables. Read it before you write the second resource,
@@ -48,9 +48,15 @@ about it is waiting to be deleted.
 single-use). Each refresh revokes the token it spent and issues the next one in the same family,
 with the row locked `FOR UPDATE`; a spent token presented again revokes the whole family.
 Logout revokes the family and never fails. Changing a password revokes every family and gives the
-caller a new one. The refresh token is refused as a bearer token. {% if cookiecutter.include_frontend == "yes" %}With the web client it travels as an
-httpOnly cookie, set and read only by `app/api/refresh_cookie.py`, never in a body, with a CSRF check
-on the two routes that read it.{% else %}It travels in the JSON body; there is no browser client and so no cookie.{% endif %}
+caller a new one. The refresh token is refused as a bearer token.
+
+**Where the refresh token travels is configuration, `REFRESH_TRANSPORT`.** `body`, the default,
+returns it in the JSON body and takes it back the same way (`app/api/v1/auth_body.py`). `cookie` is
+for a browser client: an httpOnly cookie, set and read only by `app/api/refresh_cookie.py`, never
+in a body, with a CSRF check on the two routes that read it (`app/api/v1/auth_cookie.py`). It needs
+`CORS_ORIGINS` to list the client's origin, and settings refuse to start without one. Register and
+`me` are the same under both (`app/api/v1/auth.py`); `app/api/router.py` mounts one transport's
+routes, so the OpenAPI document describes only the transport this deployment speaks.
 
 **Two rules this leans on.** A refused request rolls back its writes, except a
 `CompromisedSessionError`, whose family revocation is the point of the refusal — use that error, or
@@ -90,8 +96,8 @@ has no tables at all. The first resource you add is what makes the rest of it re
 {%- if cookiecutter.use_postgres == "yes" %}
 5. A password digest never leaves the data layer. It is not on a response schema, not in a log
    line, not in an error message, and `User` gets no `__repr__` that would put it in one.
-6. A new router goes on `private` in `app/api/router.py` unless there is a stated reason it is
-   open. Deny by default is enforced there, not route by route.
+6. A new router goes on `private` in `build_api_router` (`app/api/router.py`) unless there is a
+   stated reason it is open. Deny by default is enforced there, not route by route.
 7. `<<Add the rules that are specific to this domain. They are the highest-value lines in this
    file — "all money is Decimal", "every query filters by tenant_id".>>`
 {%- else %}
