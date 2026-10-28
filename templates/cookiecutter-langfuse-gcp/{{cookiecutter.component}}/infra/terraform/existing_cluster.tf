@@ -117,19 +117,25 @@ resource "google_sql_database_instance" "existing" {
   depends_on = [terraform_data.existing_cluster_requirements]
 }
 
+# postgres.tf:50 and :55, plus deletion_policy = "ABANDON", which the module does not set. A destroy
+# otherwise drops the database while the Langfuse pods still hold connections ("database langfuse
+# is being accessed by other users") and the role while it still owns the schema ("role langfuse
+# cannot be dropped because some objects depend on it"), and stops half way. Neither is ever
+# removed without the instance, whose deletion takes both with it; the provider documents ABANDON
+# for exactly this Postgres case.
 resource "google_sql_database" "existing" {
-  # postgres.tf:50
-  count    = local.existing ? 1 : 0
-  name     = "langfuse"
-  instance = google_sql_database_instance.existing[0].name
+  count           = local.existing ? 1 : 0
+  name            = "langfuse"
+  instance        = google_sql_database_instance.existing[0].name
+  deletion_policy = "ABANDON"
 }
 
 resource "google_sql_user" "existing" {
-  # postgres.tf:55
-  count    = local.existing ? 1 : 0
-  name     = "langfuse"
-  instance = google_sql_database_instance.existing[0].name
-  password = random_password.existing_postgres[0].result
+  count           = local.existing ? 1 : 0
+  name            = "langfuse"
+  instance        = google_sql_database_instance.existing[0].name
+  password        = random_password.existing_postgres[0].result
+  deletion_policy = "ABANDON"
 }
 
 # --- Memorystore: module redis.tf:1-18 -------------------------------------------------------------
@@ -285,7 +291,7 @@ resource "helm_release" "existing_cert_manager" {
 }
 
 resource "helm_release" "existing_clickhouse_operator" {
-  count            = local.existing ? 1 : 0
+  count            = local.existing && var.install_clickhouse_operator ? 1 : 0
   name             = "clickhouse-operator"
   repository       = "oci://ghcr.io/clickhouse"
   chart            = "clickhouse-operator-helm"

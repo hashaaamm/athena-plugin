@@ -153,6 +153,10 @@ run "existing_cluster" {
     condition     = length(helm_release.existing_cert_manager) == 1
     error_message = "cert-manager is installed unless install_cert_manager is false"
   }
+  assert {
+    condition     = google_sql_database.existing[0].deletion_policy == "ABANDON" && google_sql_user.existing[0].deletion_policy == "ABANDON"
+    error_message = "the database and its role go with the instance: dropping them first fails while Langfuse is connected and while the role owns the schema"
+  }
 }
 
 run "existing_cluster_without_cert_manager" {
@@ -168,6 +172,33 @@ run "existing_cluster_without_cert_manager" {
   assert {
     condition     = length(helm_release.existing_cert_manager) == 0
     error_message = "install_cert_manager = false must leave the cluster's own cert-manager alone"
+  }
+}
+
+# A cluster that already runs another Langfuse already runs cert-manager and the ClickHouse
+# operator: installing either again is refused (the release name is taken) or fights over CRDs.
+run "existing_cluster_beside_another_langfuse" {
+  command = plan
+
+  variables {
+    cluster_mode                = "existing"
+    existing_cluster_name       = "shared"
+    existing_cluster_location   = "europe-west1"
+    install_cert_manager        = false
+    install_clickhouse_operator = false
+  }
+
+  assert {
+    condition     = length(helm_release.existing_cert_manager) == 0 && length(helm_release.existing_clickhouse_operator) == 0
+    error_message = "install_cert_manager and install_clickhouse_operator = false must leave the cluster's own installations alone"
+  }
+  assert {
+    condition     = keys(kubernetes_role.plan_reads_secrets) == ["langfuse"]
+    error_message = "the plan identity reads Secrets only in namespaces whose releases this component installed"
+  }
+  assert {
+    condition     = length(helm_release.existing_langfuse) == 1
+    error_message = "Langfuse is still installed"
   }
 }
 

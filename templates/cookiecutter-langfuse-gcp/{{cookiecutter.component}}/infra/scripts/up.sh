@@ -66,14 +66,51 @@ CLUSTER_MODE="$(hcl_value cluster_mode)"
 CREATE_DNS_ZONE="$(hcl_value create_dns_zone)"
 
 if [[ "${CLUSTER_MODE}" == "new" ]]; then
-  targets=(-target='module.langfuse[0].google_container_cluster.this')
+  cluster='module.langfuse[0].google_container_cluster.this'
+  targets=(-target="${cluster}")
   if [[ "${CREATE_DNS_ZONE}" == "false" ]]; then
     targets+=(-target='module.langfuse[0].google_compute_global_address.ingress')
   else
     targets+=(-target='module.langfuse[0].google_dns_managed_zone.this')
   fi
+  # A cluster whose creation fails — the region out of capacity, a quota — is left in ERROR and
+  # tainted, and the provider refuses to destroy it to try again while the state records
+  # deletion_protection = true: every rerun stops here. So until a healthy cluster is in state,
+  # stage 1 creates it with protection off, which is what a failed creation then records, and a
+  # rerun replaces it. The full apply below turns protection on. The cluster's deletion_protection
+  # is Terraform's alone, so neither change calls the GKE API, and the targets hold nothing else
+  # it protects.
+  stage1=()
+  if ! state="$("${TF}" state show "${cluster}" 2>/dev/null)" || grep -q '(tainted)' <<<"${state}"; then
+    stage1=(-var=deletion_protection=false)
+  fi
   echo "==> Stage 1 of 2: the cluster and the DNS zone or address (module README, step 3)"
-  "${TF}" apply -var-file="${VARS}" "${targets[@]}"
+  "${TF}" apply -var-file="${VARS}" ${stage1[@]+"${stage1[@]}"} "${targets[@]}"
+
+  # GKE installs its own CRDs a few minutes after the cluster reports RUNNING, and the full plan
+  # needs one of them — FrontendConfig, for the module's HTTPS redirect — or it fails with "API did
+  # not recognize GroupVersionKind from manifest (CRD may not be installed)". Wait until the API
+  # server serves it. gcloud and curl rather than kubectl: nothing else here needs a kubeconfig.
+  echo "==> Waiting for the cluster to serve FrontendConfig (networking.gke.io/v1beta1)"
+  name="$(hcl_value name)" project="$(hcl_value project_id)" region="$(hcl_value region)"
+  endpoint="$(gcloud container clusters describe "${name}" --location="${region}" --project="${project}" --format='value(endpoint)')"
+  ca="$(mktemp)"
+  gcloud container clusters describe "${name}" --location="${region}" --project="${project}" \
+    --format='value(masterAuth.clusterCaCertificate)' | base64 --decode >"${ca}"
+  served=0
+  for _ in $(seq 1 60); do
+    if curl -sf --cacert "${ca}" -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+      "https://${endpoint}/apis/networking.gke.io/v1beta1" | grep -q '"frontendconfigs"'; then
+      served=1
+      break
+    fi
+    sleep 10
+  done
+  rm -f "${ca}"
+  if [[ "${served}" != 1 ]]; then
+    echo "The cluster does not serve FrontendConfig after 10 minutes. Run this again; the cluster stays." >&2
+    exit 1
+  fi
 fi
 
 echo "==> The full apply"

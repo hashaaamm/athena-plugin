@@ -24,8 +24,10 @@ cluster_mode = "{{ cookiecutter.cluster_mode }}"
 # The cluster to install into, which must meet the README's "An existing cluster" requirements.
 existing_cluster_name     = "{{ cookiecutter.existing_cluster_name }}"
 existing_cluster_location = "{{ cookiecutter.existing_cluster_location }}"
-# false when the cluster already runs cert-manager.
-install_cert_manager = true
+# false when the cluster already runs cert-manager, or the ClickHouse operator (another Langfuse
+# in the same cluster runs both).
+install_cert_manager        = true
+install_clickhouse_operator = true
 {%- endif %}
 
 # true: a Cloud DNS zone for the hostname, delegated from your registrar (the official guide's

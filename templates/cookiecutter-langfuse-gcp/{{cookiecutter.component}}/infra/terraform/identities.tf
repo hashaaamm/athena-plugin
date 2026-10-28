@@ -52,7 +52,8 @@ locals {
   # The namespaces whose Secrets a plan must read: Helm keeps each release's state in a Secret in
   # the release's namespace, and the module's `kubernetes_secret` is refreshed on every plan.
   plan_secret_namespaces = toset(concat(
-    [var.name, "clickhouse-operator-system"],
+    [var.name],
+    var.cluster_mode == "new" || var.install_clickhouse_operator ? ["clickhouse-operator-system"] : [],
     var.cluster_mode == "new" || var.install_cert_manager ? ["cert-manager"] : [],
   ))
 }

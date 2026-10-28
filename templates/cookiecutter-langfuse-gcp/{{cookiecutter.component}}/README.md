@@ -52,7 +52,14 @@ each its default of 0.5 vCPU and 2 GiB.
 | **Roughly** | **$250–330 / month** | **~$1,000 / month** |
 
 In `cluster_mode = "existing"` there is no cluster fee and no NAT of this component's own; the pods
-bill to the existing cluster. The module's VPC flow logs (50% sampling) also bill as Cloud Logging
+bill to the existing cluster.
+
+**Quota.** Autopilot's node boot disks and the ClickHouse volumes are pd-balanced, which counts
+against the region's `SSD_TOTAL_GB` quota — 500 GB by default. In a live test in `us-central1`, one
+`small` cluster running two Langfuse installations reached 459 GB with two nodes, and the second
+installation's 50 GiB ClickHouse volume could not be created (`QUOTA_EXCEEDED`). Check the headroom
+before the first apply, and ask for more before adding a second installation to the region:
+`gcloud compute regions describe <region> --format=json | jq '.quotas[] | select(.metric=="SSD_TOTAL_GB")'`. The module's VPC flow logs (50% sampling) also bill as Cloud Logging
 ingestion beyond the free allowance.
 
 ## Layout
@@ -102,6 +109,11 @@ the cluster the module creates, so nothing inside the cluster can be planned bef
 exists — the module's README calls the targeted first apply "the supported installation flow, not a
 workaround". `up.sh` applies the cluster and the DNS zone (or the reserved IP) first, then everything.
 
+The same reason makes step 3 incomplete in `new` mode before the first apply: `just plan` prints
+the whole plan and then fails on `module.langfuse[0].kubernetes_manifest.https_redirect` with
+`cannot create REST client: no client config`. That is expected — read the plan above the error.
+`just up` shows each stage's plan again and asks before it applies anything.
+
 **Why setup runs from a laptop at all.** The identity CI applies as is created by the first apply,
 so the first apply cannot run in CI. Once `just sync-github` has set `{{ cookiecutter.__component_var }}_APPLY_SA`,
 `just up` refuses to run; `--break-glass` overrides it, and a break-glass apply is recorded and
@@ -115,12 +127,16 @@ database and ClickHouse passwords, `SALT`, `NEXTAUTH_SECRET` and `ENCRYPTION_KEY
 Memorystore's `auth_string`. The module offers no way to supply them out of band at 1.0.10, so the
 state bucket is where they are protected:
 
-- **CMEK**: a default Cloud KMS key, `terraform-state/state`, in the bucket's location;
+- **CMEK**: a default Cloud KMS key, `terraform-state/state` unless `--kms-key-ring` and
+  `--kms-key` name others, in the bucket's location. Cloud KMS never deletes a key ring or a key,
+  so choose the names before the first run;
 - **versioning**, so a corrupted state has a way back;
 - **uniform bucket-level access** and **public access prevention enforced**;
 - **read only by** the operators, the plan identity (`roles/storage.objectViewer` on the bucket) and
-  the apply identity (`roles/storage.objectAdmin`). The bootstrap prints the bucket's policy;
-  anyone with a project-level storage role can also read it, so keep that list short too.
+  the apply identity (`roles/storage.objectAdmin`). The bootstrap prints the bucket's policy. A new
+  bucket's policy also lets the project's Owners and Editors read objects, and the bootstrap removes
+  the same read from Viewers; anyone with a project-level storage role can read it too, so keep
+  those lists short.
 
 Saved plan files hold the same values. CI never uploads one: the pull request gets the rendered
 plan, where provider-marked values print as `(sensitive)`, and the apply job plans and applies in
@@ -161,6 +177,7 @@ The cluster must have, and the plan checks the first four before anything is cre
 | **outbound internet** from the nodes (Cloud NAT, or public nodes) | images from Docker Hub and ghcr.io, Helm charts |
 | **a public control-plane endpoint**, or a runner inside the network | GitHub-hosted runners must reach the API server to plan and apply; the plan warns otherwise |
 | **cert-manager**: none, or set `install_cert_manager = false` | the ClickHouse operator's webhooks need it; two installations fight over its CRDs |
+| **the ClickHouse operator**: none, or set `install_clickhouse_operator = false` | the chart's ClickHouse needs it; a second `clickhouse-operator` release is refused. Another Langfuse in the cluster already runs both, so set both to `false` |
 
 The component owns the namespace `{{ cookiecutter.component }}` — nothing else should be deployed in it — and, if
 it installed them, the `cert-manager` and `clickhouse-operator-system` releases. TLS is a
@@ -291,10 +308,18 @@ breaks a running installation. A plan that shows either being replaced is a plan
 just teardown dev
 ```
 
-`teardown.sh` refuses until step 1 has been done, asks for the project id typed out, and runs
-`terraform destroy`. It leaves the state bucket: other components may share it. It prints how to
-see what else is in the bucket and how to remove only this component's prefix. In `existing` mode
-the cluster stays; the namespace and the releases this component installed go.
+`teardown.sh` refuses until step 1 has been done, prints the destroy plan, asks for the project id
+typed out — that is the confirmation — and runs `terraform destroy`. Before it does, it removes
+three things from state that go with something else: the Cloud SQL database and role, which the
+instance's deletion removes (dropped first, they fail while Langfuse is connected and while the
+role owns the schema), and, in `new` mode, the private services connection, which the network's
+deletion removes (deleted first, it fails for a while after Cloud SQL). If a destroy stops after
+the cluster has gone, run `just teardown` again: Terraform can no longer plan the whole
+configuration then, so the script destroys what is left in state by name.
+
+It leaves the state bucket: other components may share it. It prints how to see what else is in
+the bucket and how to remove only this component's prefix. In `existing` mode the cluster stays;
+the namespace and the releases this component installed go.
 
 ## Pinned versions
 

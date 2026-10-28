@@ -101,6 +101,12 @@ variable "install_cert_manager" {
   default     = true
 }
 
+variable "install_clickhouse_operator" {
+  description = "Install the ClickHouse operator, which reconciles the ClickHouseCluster and KeeperCluster the Langfuse chart renders. Set false in `existing` mode when the cluster already runs it, for example for another Langfuse: a second release of the same name is refused, and two installations fight over the same CRDs. The module always installs it in `new` mode."
+  type        = bool
+  default     = true
+}
+
 variable "create_dns_zone" {
   description = "Create a Cloud DNS zone for the hostname, as the official guide does, and delegate it from your registrar to the name servers in the `dns_name_servers` output. False: point an A record at the `ingress_ip` output yourself."
   type        = bool

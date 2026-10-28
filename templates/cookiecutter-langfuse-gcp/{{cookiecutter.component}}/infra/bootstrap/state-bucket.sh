@@ -5,7 +5,7 @@
 # Deliberately not Terraform: a configuration cannot create the bucket that holds its own state.
 # A short script that checks before it acts is the honest answer to that bootstrap hole.
 #
-#   ./infra/bootstrap/state-bucket.sh [ENV] [--bucket NAME] [--harden]
+#   ./infra/bootstrap/state-bucket.sh [ENV] [--bucket NAME] [--harden] [--kms-key-ring NAME] [--kms-key NAME]
 #
 #   ENV            the environment whose files to read: environments/<ENV>.tfvars and
 #                  environments/<ENV>.backend.hcl. Default: dev.
@@ -15,6 +15,10 @@
 #   --harden       for an existing bucket: turn on what the checks below find missing — versioning,
 #                  public access prevention, uniform access and a CMEK default key. Without it, an
 #                  existing bucket is only checked, never changed.
+#   --kms-key-ring NAME, --kms-key NAME
+#                  the key ring and key the state is encrypted with, created if missing. Default:
+#                  terraform-state and state. Choose them before the first run: Cloud KMS never
+#                  deletes a key ring or a key, so a name, once used, stays taken in the project.
 #
 # What it does, every step checking before it creates, so it is safe to re-run:
 #
@@ -22,7 +26,8 @@
 #   2. a NEW bucket: creates it in the region with uniform bucket-level access, public access
 #      prevention and versioning, creates a Cloud KMS key ring and key beside it, lets Cloud
 #      Storage's service agent use the key, and makes the key the bucket's default — so the state,
-#      which holds every secret Langfuse runs with, is encrypted with a key this project controls;
+#      which holds every secret Langfuse runs with, is encrypted with a key this project controls.
+#      Project viewers lose the object read a new bucket's policy gives them by default;
 #   3. an EXISTING bucket: checks versioning and public access prevention (fails without them),
 #      and uniform access and a CMEK default key (warns without them), and changes nothing unless
 #      --harden is given;
@@ -38,11 +43,15 @@ TF_DIR="${HERE}/../terraform"
 ENVIRONMENT="dev"
 NEW_BUCKET=""
 HARDEN=0
+KEYRING="terraform-state"
+KEY="state"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bucket) NEW_BUCKET="${2:?--bucket needs a name}"; shift 2 ;;
     --harden) HARDEN=1; shift ;;
-    -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --kms-key-ring) KEYRING="${2:?--kms-key-ring needs a name}"; shift 2 ;;
+    --kms-key) KEY="${2:?--kms-key needs a name}"; shift 2 ;;
+    -h|--help) sed -n '2,37p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) ENVIRONMENT="$1"; shift ;;
   esac
@@ -89,9 +98,6 @@ if [[ "$(hcl_value "${TFVARS}" state_bucket)" != "${BUCKET_NAME}" ]]; then
   exit 1
 fi
 BUCKET="gs://${BUCKET_NAME}"
-
-KEYRING="terraform-state"
-KEY="state"
 
 echo "project = ${PROJECT}"
 echo "region  = ${REGION}"
@@ -150,7 +156,13 @@ if ! gcloud storage buckets describe "${BUCKET}" --project="${PROJECT}" >/dev/nu
     --public-access-prevention \
     --default-encryption-key="${key_name}"
   gcloud storage buckets update "${BUCKET}" --versioning
-  echo "    created, versioned, encrypted with ${key_name}"
+  # A new bucket's policy gives the project's basic roles access through convenience values, and
+  # `projectViewer` gets roles/storage.legacyObjectReader: every project Viewer could read state,
+  # and so every Langfuse secret. Owners and editors keep theirs; the plan identity has its own
+  # grant (identities.tf).
+  gcloud storage buckets remove-iam-policy-binding "${BUCKET}" \
+    --member="projectViewer:${PROJECT}" --role=roles/storage.legacyObjectReader >/dev/null
+  echo "    created, versioned, encrypted with ${key_name}; project viewers cannot read objects"
 else
   echo "    exists — checking it"
   describe() { gcloud storage buckets describe "${BUCKET}" --format="value($1)"; }
@@ -224,7 +236,8 @@ fi
 
 echo
 echo "==> Who can read state (bucket policy; project-level storage roles also apply)"
-gcloud storage buckets get-iam-policy "${BUCKET}" --format="table(bindings.role,bindings.members.flatten())" || true
+gcloud storage buckets get-iam-policy "${BUCKET}" --flatten="bindings[].members" \
+  --format="table(bindings.role,bindings.members)" || true
 
 cat <<EOF
 
