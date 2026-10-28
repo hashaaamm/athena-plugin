@@ -3,6 +3,6 @@
 # Ask Athena for the local development and command runner rules.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.23.1
+    rev: v8.30.1
     hooks:
       - id: gitleaks

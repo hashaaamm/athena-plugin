@@ -1,0 +1,19 @@
+# Secret-scanning configuration for this component, read by the `secrets` job in
+# .github/workflows/{{ cookiecutter.component }}-ci.yml with `--config {{ cookiecutter.component }}/.gitleaks.toml`.
+title = "{{ cookiecutter.component }}"
+
+# Load gitleaks' own rules and add to them. Without this the file REPLACES the default rule set
+# with nothing, every scan reports "no leaks found", and the gate passes because it stopped
+# looking. A config that turns the scanner off is worse than any false positive it removed.
+[extend]
+useDefault = true
+
+# Two false positives, allowlisted by LINE, not by path: a real value on any other line of the same
+# file is still a finding. The Helm values in infra/terraform/existing_cluster.tf name the KEYS
+# inside the `langfuse` Kubernetes secret that hold the Postgres and Redis passwords —
+# `userPasswordKey = "postgres-password"` — and the hashicorp-tf-password rule cannot tell a key's
+# name from a password.
+[[allowlists]]
+description = "Helm values naming a key in a Kubernetes secret, not a credential."
+regexTarget = "line"
+regexes = ['''(userPasswordKey|existingSecretPasswordKey)\s*=\s*"[a-z-]+"''']

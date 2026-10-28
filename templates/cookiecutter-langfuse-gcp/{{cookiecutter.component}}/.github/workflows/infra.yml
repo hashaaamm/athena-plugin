@@ -1,0 +1,192 @@
+# Langfuse infrastructure: static checks on every change, a plan posted to every pull request, and
+# the apply when the change merges to main.
+#
+#   static  fmt, validate, the mocked plan tests, tflint, shellcheck and actionlint. No cloud
+#           credentials; the cheapest
+#           gate runs first and `just lint` runs the same commands.
+#   plan    pull requests only, as the read-only plan identity. The rendered plan is posted to the
+#           pull request; the plan file itself never leaves the runner, because a saved plan holds
+#           every sensitive value in cleartext. `-lock=false` because the plan identity can read
+#           state and cannot write it — not even a lock object.
+#   apply   pushes to main only, as the apply identity, in the `infrastructure` environment. It
+#           saves a plan and applies exactly that file, never a fresh `apply -auto-approve`, and is
+#           never cancelled: an apply stopped half way leaves resources half-changed and the state
+#           locked.
+#
+# Plan and apply are inert until `just sync-github` has set the repository variables, which it
+# does after the environment's first apply from an operator's machine. That first apply creates
+# the identities this workflow runs as, so it cannot run here.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. The two tokens `__COMPONENT__` and `__COMPONENT_VAR__` are
+# substituted as plain text when the post-generation hook installs it as
+# `.github/workflows/__COMPONENT__-infra.yml`.
+name: __COMPONENT__ Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - '__COMPONENT__/infra/**'
+      - '__COMPONENT__/justfile'
+      - '.github/workflows/__COMPONENT__-infra.yml'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/infra/**'
+      - '__COMPONENT__/justfile'
+      - '.github/workflows/__COMPONENT__-infra.yml'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+
+# A pull request's run is cancelled by its next push: only the latest commit matters. A push to
+# main never cancels a run in progress.
+concurrency:
+  group: __COMPONENT__-infra-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # The environment this workflow plans and applies. A second environment is a second pair of
+  # files under environments/ and, in its own project, a copy of the plan and apply jobs.
+  TF_ENV: dev
+  TF_IN_AUTOMATION: '1'
+  TF_INPUT: '0'
+
+defaults:
+  run:
+    working-directory: __COMPONENT__/infra/terraform
+
+jobs:
+  static:
+    name: fmt, validate, test, tflint, shellcheck, actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive -diff
+      # readonly: a provider the committed lock file does not name fails here, not at apply.
+      - run: terraform init -backend=false -lockfile=readonly
+      - run: terraform validate
+      # Plans both cluster modes and the bad variable combinations against mocked providers.
+      - run: terraform test
+      - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # tflint --init downloads the ruleset from GitHub
+        run: |
+          image=ghcr.io/terraform-linters/tflint:v0.65.0
+          docker run --rm -e TFLINT_PLUGIN_DIR=/data/.tflint.d -e GITHUB_TOKEN -v "$PWD:/data" -w /data "$image" --init
+          docker run --rm -e TFLINT_PLUGIN_DIR=/data/.tflint.d -v "$PWD:/data" -w /data "$image" --format compact
+      - name: shellcheck
+        working-directory: __COMPONENT__
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 \
+            infra/bootstrap/state-bucket.sh infra/scripts/tf.sh infra/scripts/up.sh \
+            infra/scripts/sync-github.sh infra/scripts/teardown.sh
+      - name: actionlint
+        working-directory: .
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12 \
+            .github/workflows/__COMPONENT__-ci.yml .github/workflows/__COMPONENT__-infra.yml
+
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    needs: [static]
+    # Never with cloud credentials for a pull request from a fork: a plan runs provider and
+    # data-source code from the branch, so a stranger's branch could read whatever the plan identity
+    # can — state included. And inert until the identities exist.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.__COMPONENT_VAR___PLAN_SA != ''
+    permissions:
+      contents: read
+      id-token: write        # Workload Identity Federation
+      pull-requests: write   # the plan comment
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      # Keyless: GitHub's OIDC token exchanged for a short-lived token of the plan identity.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.__COMPONENT_VAR___WIF_PROVIDER }}
+          service_account: ${{ vars.__COMPONENT_VAR___PLAN_SA }}
+      - run: terraform init -lockfile=readonly -backend-config="environments/${TF_ENV}.backend.hcl"
+      - run: terraform plan -lock=false -var-file="environments/${TF_ENV}.tfvars" -out=tfplan
+      # The rendered plan, not the file: values the providers mark sensitive print as (sensitive).
+      - name: Post the plan to the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          terraform show -no-color tfplan > plan.txt
+          rm -f tfplan
+          summary="$(grep -E '^(Plan:|No changes\.)' plan.txt | tail -1 || true)"
+          {
+            echo "### Terraform plan — \`${TF_ENV}\` at ${SHA:0:7}"
+            echo
+            echo "${summary:-See the full plan.}"
+            echo
+            echo "<details><summary>Full plan</summary>"
+            echo
+            echo '```'
+            head -c 60000 plan.txt
+            echo
+            echo '```'
+            echo "</details>"
+          } > comment.md
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+          rm -f plan.txt comment.md
+
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    needs: [static]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.__COMPONENT_VAR___APPLY_SA != ''
+    # The gate on every apply. Give the environment required reviewers and limit it to main in the
+    # repository settings: the apply identity can change anything in the project, and only a job in
+    # this environment can become it.
+    environment: infrastructure
+    concurrency:
+      group: __COMPONENT__-infra-apply
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write        # Workload Identity Federation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.__COMPONENT_VAR___WIF_PROVIDER }}
+          service_account: ${{ vars.__COMPONENT_VAR___APPLY_SA }}
+      - run: terraform init -lockfile=readonly -backend-config="environments/${TF_ENV}.backend.hcl"
+      # Plan to a file and apply that file: what this log shows is exactly what runs, and Terraform
+      # refuses the file if state moved in between. It is the same change the pull request's plan
+      # showed unless main moved since; a surprise here is a reason to stop and read.
+      - run: terraform plan -var-file="environments/${TF_ENV}.tfvars" -out=tfplan
+      - run: terraform apply tfplan
+      - if: always()
+        run: rm -f tfplan

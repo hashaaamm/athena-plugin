@@ -1,0 +1,47 @@
+# Secret scan over the component's full history, on every pull request and every push to main that
+# touches it. This component's Terraform state holds every secret Langfuse runs with; the
+# repository must never hold any of them, and a shallow clone cannot see the commit where one was
+# added and then removed.
+#
+# This file is copied verbatim by cookiecutter (`_copy_without_render` in cookiecutter.json).
+# GitHub Actions' ${{ ... }} and Jinja's {{ ... }} are the same two braces, so rendering this file
+# would strip every expression in it. The two tokens `__COMPONENT__` and `__COMPONENT_VAR__` are
+# substituted as plain text when the post-generation hook installs it as
+# `.github/workflows/__COMPONENT__-ci.yml`.
+name: __COMPONENT__ CI
+
+on:
+  pull_request:
+    paths:
+      - '__COMPONENT__/**'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - '__COMPONENT__/**'
+      - '.github/workflows/__COMPONENT__-ci.yml'
+
+concurrency:
+  group: __COMPONENT__-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0      # full history, not just the diff
+          persist-credentials: false
+      # The gitleaks CLI in its pinned image, not the gitleaks action: the action needs a licence
+      # for an organisation's repositories, and the CLI needs nothing. The image trusts every
+      # directory (`safe.directory=*`), so a checkout owned by the runner's user is readable.
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git . --log-opts="-- __COMPONENT__" \
+            --config __COMPONENT__/.gitleaks.toml --redact --no-banner

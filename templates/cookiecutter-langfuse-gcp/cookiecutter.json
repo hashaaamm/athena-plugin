@@ -1,0 +1,39 @@
+{
+  "project_name": "Langfuse",
+  "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '-').replace('_', '-') }}",
+  "component": "langfuse",
+  "gcp_project_id": "your-gcp-project",
+  "gcp_region": "europe-west1",
+  "github_repository": "your-org/your-repo",
+  "profile": ["small", "ha"],
+  "hostname": "langfuse.example.com",
+  "cluster_mode": ["new", "existing"],
+  "existing_cluster_name": "",
+  "existing_cluster_location": "",
+  "state_bucket": "{{ cookiecutter.gcp_project_id }}-tf-state",
+  "__component_var": "{{ cookiecutter.component.upper().replace('-', '_') }}",
+  "_copy_without_render": [
+    ".github/workflows/*",
+    "justfile"
+  ],
+  "__prompts__": {
+    "component": "Component folder, and the prefix of everything it creates outside it (lowercase, e.g. langfuse)",
+    "gcp_project_id": "GCP project id — one project per environment",
+    "gcp_region": "GCP region for the cluster, Cloud SQL, Memorystore and the bucket",
+    "github_repository": "owner/name of the repository this component lives in (Workload Identity trusts it by name)",
+    "profile": {
+      "__prompt__": "Size",
+      "small": "small: one ClickHouse replica, zonal Cloud SQL Enterprise, Basic Redis (~$250-330/month)",
+      "ha": "ha: the module's defaults, three ClickHouse replicas, regional Enterprise Plus, Standard HA Redis (~$1,000/month)"
+    },
+    "hostname": "Hostname Langfuse is served on, e.g. langfuse.example.com (you delegate DNS for it after the first apply)",
+    "cluster_mode": {
+      "__prompt__": "GKE cluster",
+      "new": "new: the official module creates a GKE Autopilot cluster and its VPC",
+      "existing": "existing: install into a GKE cluster you already run in this project"
+    },
+    "existing_cluster_name": "Existing cluster's name (cluster_mode=existing only)",
+    "existing_cluster_location": "Existing cluster's region or zone (cluster_mode=existing only)",
+    "state_bucket": "GCS bucket for Terraform state: a new name, or an existing bucket to share (state goes under <component>/<env>)"
+  }
+}

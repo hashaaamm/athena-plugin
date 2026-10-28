@@ -1,0 +1,20 @@
+# Terraform working files. State and saved plans hold every Langfuse secret in cleartext: never
+# commit either. .terraform.lock.hcl is NOT ignored — it pins the providers and is committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+plan.txt
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Local variable files that might hold a value nobody should commit. The committed ones live in
+# infra/terraform/environments/ and hold no secret.
+*.auto.tfvars
+*.auto.tfvars.json
+# tflint's downloaded rulesets
+.tflint.d/

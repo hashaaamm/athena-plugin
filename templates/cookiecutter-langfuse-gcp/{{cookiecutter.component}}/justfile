@@ -1,0 +1,87 @@
+# This component's commands. From this folder: `just <recipe>`. From the repository root:
+# `just <component> <recipe>`. Either way they run here.
+#
+# Terraform runs natively when 1.16 or newer is installed, and otherwise in the pinned image
+# (infra/scripts/tf.sh). The linters always run in pinned images, so a laptop and CI agree.
+#
+# This file is copied verbatim by cookiecutter: nothing in it is project-specific, and its `{{ }}`
+# are just's, not Jinja's.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+tf := "./infra/scripts/tf.sh"
+component := file_name(justfile_directory())
+tflint_image := "ghcr.io/terraform-linters/tflint:v0.65.0"
+actionlint_image := "rhysd/actionlint:1.7.12"
+shellcheck_image := "koalaman/shellcheck:v0.11.0"
+
+# Show the recipes
+default:
+    @just --list
+
+# Enable the APIs and create (or check) the state bucket and its KMS key. Creates cloud resources.
+bootstrap ENV="dev" *FLAGS:
+    ./infra/bootstrap/state-bucket.sh {{ENV}} {{FLAGS}}
+
+# Point Terraform at the environment's state (environments/ENV.backend.hcl)
+init ENV="dev":
+    {{tf}} init -input=false -lockfile=readonly -reconfigure -backend-config=environments/{{ENV}}.backend.hcl
+
+# What an apply would change. Read-only.
+plan ENV="dev" *FLAGS:
+    {{tf}} plan -input=false -var-file=environments/{{ENV}}.tfvars {{FLAGS}}
+
+# The first apply of an environment, from this machine, once. CI applies every change after it.
+up ENV="dev" *FLAGS:
+    ./infra/scripts/up.sh {{ENV}} {{FLAGS}}
+
+# The outputs: the URL, the DNS name servers, the CI identities
+output ENV="dev":
+    {{tf}} output
+
+# Copy the CI identities into repository variables: the handover to the infra workflow
+sync-github ENV="dev":
+    ./infra/scripts/sync-github.sh {{ENV}}
+
+# Destroy the environment. Needs deletion_protection = false applied by CI first.
+teardown ENV="dev":
+    ./infra/scripts/teardown.sh {{ENV}}
+
+# Format the Terraform files in place
+fmt:
+    {{tf}} fmt -recursive
+
+# Everything CI's static job runs, in the same order. Needs no cloud credentials.
+lint: lint-tf lint-tflint lint-shell lint-actions
+
+# terraform fmt, init without a backend, validate, and the mocked plan tests in tests/
+lint-tf:
+    {{tf}} fmt -check -recursive -diff
+    {{tf}} init -input=false -backend=false -lockfile=readonly
+    {{tf}} validate
+    {{tf}} test
+
+# tflint with the Google ruleset pinned in .tflint.hcl
+lint-tflint:
+    docker run --rm --name "tflint-{{component}}-$$" --user "$(id -u):$(id -g)" -e HOME=/tmp \
+      -e TFLINT_PLUGIN_DIR=/data/.tflint.d -e GITHUB_TOKEN \
+      -v "{{justfile_directory()}}/infra/terraform:/data" -w /data {{tflint_image}} --init
+    docker run --rm --name "tflint-{{component}}-$$" --user "$(id -u):$(id -g)" -e HOME=/tmp \
+      -e TFLINT_PLUGIN_DIR=/data/.tflint.d \
+      -v "{{justfile_directory()}}/infra/terraform:/data" -w /data {{tflint_image}} --format compact
+
+# shellcheck on every script
+lint-shell:
+    docker run --rm --name "shellcheck-{{component}}-$$" -v "{{justfile_directory()}}:/mnt:ro" -w /mnt \
+      {{shellcheck_image}} infra/bootstrap/state-bucket.sh infra/scripts/tf.sh infra/scripts/up.sh \
+      infra/scripts/sync-github.sh infra/scripts/teardown.sh
+
+# actionlint on this component's workflows, at the repository root
+lint-actions:
+    docker run --rm --name "actionlint-{{component}}-$$" -v "{{parent_directory(justfile_directory())}}:/repo:ro" -w /repo \
+      {{actionlint_image}} -color .github/workflows/{{component}}-ci.yml .github/workflows/{{component}}-infra.yml
+
+# Regenerate .terraform.lock.hcl for CI and both kinds of Mac after changing a provider constraint
+lock:
+    {{tf}} init -input=false -backend=false -upgrade
+    {{tf}} providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64

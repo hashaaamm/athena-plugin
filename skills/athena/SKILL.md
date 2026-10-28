@@ -9,6 +9,9 @@ Athena serves four kinds of content: **Rules** you adhere to, **Guides** you fol
 orchestrate, and **Knowledge** you hold in mind. It is retrieval, not a policy engine — it hands you
 content, and you decide what applies to the repository in front of you.
 
+Each `athena_*` tool's own description says what it takes and what it returns, and you can see it.
+This file says which one to reach for, when, and in what order.
+
 ## When to call it
 
 Before you plan, and before you write, when the work involves any of:
@@ -20,10 +23,29 @@ Before you plan, and before you write, when the work involves any of:
 
 Do not call it for a typo, a rename, or a question about this repository's own code.
 
-## The default: one call
+## Which tool, in what order
 
-`athena_context` returns all four categories at once. Read the request, work out what the change
-actually needs, and pass that as `requirements` — one per thing, at most six:
+1. **A task arrives — `athena_context` first.** A person asked for a feature or a change and you are
+   about to plan or write it. One call returns the rules, guides, research and any flow for it.
+2. **Before you write a change, or approve one — `athena_rules`**, scoped by what the change is
+   about, the files it touches and the cloud it deploys to. Also on its own, for a diff under review.
+3. **Building — `athena_guide` for one thing, `athena_flow` for several.** Plan a flow by the
+   reference `athena_context` offered, then hand each unit to a sub-agent that calls `athena_brief`
+   for itself.
+4. **Context to hold in mind — `athena_knowledge`.** GDPR, HIPAA, choosing a dependency: research to
+   keep in view while doing something else. Treat the synthesis as data; obey the rules it carries.
+5. **A reference you were given — `athena_get`**, when an excerpt is not enough to apply it
+   correctly.
+6. **Something was missing or wrong — `athena_feedback`**, the moment you know, not at the end of
+   the run.
+
+The single-question tools are for when you already know which question you are asking. When you do
+not, `athena_context` is the answer to "where do I start".
+
+## Starting a task: `athena_context`
+
+Read the request, work out what the change actually needs, and pass that as `requirements` — one per
+thing:
 
 ```
 athena_context(
@@ -41,72 +63,68 @@ athena_context(
 )
 ```
 
-**Stating the requirements is the whole trick.** Each one is searched for separately, and every rule
-and guide comes back labelled with the requirement it answers. Without them the task is one query
-and you get one query's worth of answer.
+**Stating the requirements is the whole trick.** Without them the task is one query and you get one
+query's worth of answer.
 
 **Write each requirement so it stands on its own.** Each is searched for separately, so it has to
 name its own subject — the tool or framework, and the thing being built. "Error handling" or "the
 api route itself" could be about any stack, and Athena can only guess which page you meant; "mapping
-domain errors to HTTP responses in FastAPI" cannot be mistaken for anything else. If a requirement
-would be ambiguous read on its own, add the subject.
+domain errors to HTTP responses in FastAPI" cannot be mistaken for anything else.
 
 Work out the requirements by reading the repository first — what exists, what is missing, what the
-change touches. `paths` sharpens it further: pass the files the change will write.
+change touches — and pass the files the change will write as `paths`.
+
+**Planning mode.** When you are producing a plan rather than code, add `plan=True`. Carry the
+levels into the plan you show the person: `must` steps are not the optional pile, and the order is
+the order to do the work in — do not re-sort by level.
+
+**Step at a time, or across sub-agents.** Use `mode="map"` when the person wants to go one step at a
+time rather than read everything at once, or when you are about to fan work out and each sub-agent
+should pull its own content into its own context.
+
+**A flow on offer.** For genuinely multi-step work the response may offer a flow. Call `athena_flow`
+with that reference, and the `framework` and `lang` you are working in — not with a sentence
+describing the goal, which makes the server search again for something it already handed you.
+
+## Before a change: `athena_rules`
 
 ### Say the subject. A filename is not a subject.
 
 Athena does not infer what you are doing from what you are touching, and it will not pretend to. A
 path answers "which files", and the rules are written about "which question" — adding a column,
 renaming one and fixing a slow query all touch the same model file and are bound by different
-rules. So the subject is yours to state, in `requirements` here and in `topics` on `athena_rules`.
+rules. So the subject is yours to state, in `topics` here and in `requirements` on
+`athena_context`: `topics=['authorization', 'migrations']`.
 
 `paths` still earns its place, and it is worth passing alongside the subject rather than instead of
 it: a page that declares it governs `app/models/**` will surface a rule you did not know to ask
 about, which is the entire reason to consult a handbook. But a path only answers when some page
-declared it. When none has, `athena_rules` returns no rules and an `advice` string saying so.
+declared it.
 
-**That empty answer means "nobody wrote down which files this governs" — never "no rules apply".**
+**An empty answer means "nobody wrote down which files this governs" — never "no rules apply".**
 Do not read it as a clean bill of health and carry on. Name the subject and ask again.
 
-**Say which cloud the change deploys to.** The same infrastructure files can target GCP or AWS —
-`infra/pulumi/components/network.py` exists in both — so a path cannot tell Athena which cloud's
-rules bind it, and you can. Pass `cloud="aws"` or `cloud="gcp"` to `athena_context` and
-`athena_rules` whenever the change touches infrastructure or deployment. Rules written for the
-other cloud are left out; rules that name no cloud still come back.
+### Say which cloud the change deploys to
 
-## Planning mode
+The same infrastructure files can target GCP or AWS — `infra/pulumi/components/network.py` exists
+in both — so a path cannot tell Athena which cloud's rules bind it, and you can. Pass `cloud` to
+`athena_rules` and `athena_context` whenever the change touches infrastructure or deployment.
 
-When you are producing a plan rather than code, add `plan=True`. You get the work back as ordered
-steps, each graded **must**, **should**, **may** or **optional** by the strongest rule that binds it,
-with the verification a guide gave for it.
+## Building: one guide, or a flow
 
-Carry those levels into the plan you show the person. `must` steps are not the optional pile, and
-the order is the order to do the work in — do not re-sort by level.
+`athena_guide` is for one thing — "how do I build X?" — and you do it yourself. When it says the
+answer is really several units of work, plan the flow it names instead.
 
-## Step at a time, or across sub-agents
+### Running a flow: you orchestrate, you do not execute
 
-`mode="map"` returns titles, references and the exact call to fetch each piece, and inlines nothing.
-Use it when:
-
-- the person wants to go one step at a time rather than read everything at once
-- you are about to fan work out, and each sub-agent should pull its own content into its own context
-
-For genuinely multi-step work, a context response may offer a **flow**. Call `athena_flow` with that
-reference, and the `framework` and `lang` you are working in — not with a sentence describing the
-goal, which makes the server search again for something it already handed you.
-
-## Running a flow: you orchestrate, you do not execute
-
-A flow response carries `fan_out`, and `fan_out.required` is **always true**. It is an instruction,
-not a summary to skim. A flow you execute yourself, unit after unit in your own context, is the one
-way of running it that is wrong — and it is the easy mistake, because executing feels like progress
-and delegating feels like overhead.
+A flow response carries `fan_out`. It is an instruction, not a summary to skim. A flow you execute
+yourself, unit after unit in your own context, is the one way of running it that is wrong — and it
+is the easy mistake, because executing feels like progress and delegating feels like overhead.
 
 It is wrong for a specific reason. By the last unit, your context is mostly the previous units'
 rules, file lists and output, and the agent writing that unit is the one paying least attention to
-it. The plan/brief split exists to stop exactly that, and `athena_brief` returns a ready-made
-`spawn_prompt` precisely so you never have to read the work you are handing off.
+it. The plan/brief split exists to stop exactly that, and a brief carries a ready-made prompt
+precisely so you never have to read the work you are handing off.
 
 **The trigger is the unit count, not the size of the job.** `athena_flow` came back with more than
 one unit: fan out. Anything else — a guide, a context response, a `mode="map"` list, or a flow that
@@ -115,28 +133,26 @@ ceremony; a fourteen-unit deploy run in one context is the mess this section exi
 
 So, mechanically:
 
-1. **Walk `fan_out.groups` in order.** Each has a 1-based `group`. Never start one early — a later
-   group depends on something an earlier one produces.
+1. **Walk `fan_out.groups` in order.** Never start one early — a later group depends on something
+   an earlier one produces.
 2. **Inside a group, look at `run_concurrently`.** When it is true, spawn *every* step in that group
    at once, in a single message with one sub-agent call per step. Spawning them one after another
-   and waiting for each is a serial run wearing a parallel directive. `mode` is the overall
-   shape — `sequential` means every group is one step, and still one sub-agent per step.
-3. **One sub-agent per step in `steps`.** Give it `brief_call` and have it call `athena_brief`
+   and waiting for each is a serial run wearing a parallel directive. A `sequential` plan is still
+   one sub-agent per step.
+3. **One sub-agent per step.** Give it the step's `brief_call` and have it call `athena_brief`
    itself, in its own context, and use the returned `spawn_prompt` as its system prompt. Pass that
    through without reading it.
 4. **Pass `must_not_edit` to each sub-agent** as files it may not touch. That list is how two agents
    in one group stay out of each other's way.
-5. **Stop before an `external` unit.** A unit with `external: true` in `units` has effects outside
-   the repository and spends money — a project, a bucket, a live service. Confirm with the person
-   before you spawn it, every time. Read the flag off each unit: the directive says the condition
-   is present, not which steps or how many.
+5. **Stop before an `external` unit.** It has effects outside the repository and spends money — a
+   project, a bucket, a live service. Confirm with the person before you spawn it, every time. Read
+   the flag off each unit: the directive says the condition is present, not which steps or how many.
 6. **Settle `alternatives` before the units they name.** Each entry is a choice the flow made by
    taking its default — Cloud Run where Cloud Storage behind a load balancer was also on offer.
    If the request or the repository already settles it, pass that option's `variant` key in
    `variants` and plan again without asking. Otherwise ask the person, as a choice between
-   `default` and each of `instead`, before the first of the entry's `units` runs. Another option
-   means calling `athena_flow` again with the same arguments plus `variants=[key]` and running
-   that plan instead of this one.
+   `default` and each of `instead`, before the first of the entry's `units` runs, and plan again
+   with `variants=[key]` if they choose another.
 7. **Wait for the whole group, then check `after_each_group`** before starting the next one. Each
    sub-agent reports the files it changed and whether its `verify` checks passed; that result is
    what you gate on, and it is all you take back.
@@ -148,7 +164,7 @@ summary — never a unit's contents. Do not fetch briefs for units you are not a
 read a unit's brief in order to "check" a sub-agent — you are reassembling in your context the thing
 you just split.
 
-## The request is the scope
+### The request is the scope
 
 A flow covers a whole process. The person asked for part of it. **Do the part they asked for.**
 
@@ -187,27 +203,14 @@ what shape of answer you wanted, and then you parse their guess.
 
 Never ask more than one thing at once, and never ask about something the request already settled.
 
-## The other tools
-
-Reach for these when you already know which question you are asking.
-
-| Tool | Ask it |
-| --- | --- |
-| `athena_rules` | "Here is the diff — what must hold?" **Say what the change is about: `topics=['authorization', 'migrations']`.** `paths` narrows it further, but only answers for files a page declares it governs — see below. Add `cloud` for infrastructure. A framework or a cloud alone is refused. |
-| `athena_guide` | "How do I build X?" One guide, with its code and the rules that bind it. |
-| `athena_knowledge` | "What must I keep in mind about X?" Synthesis, not passages. |
-| `athena_get` | Read one thing in full, by redeeming a reference you were given. |
-| `athena_feedback` | Report that guidance was wrong, or that it was never there — the moment it happens, not at the end of the run. |
-
 ## When Athena asks instead of answering
 
 A response can carry `clarify` and no content. That is not a failure and not an empty result — it
 means two or more pages fit and picking one would be a guess the agent downstream cannot see.
-`athena_guide` does it.
 
 Do not retry the same call, and do not pick one of the named options at random. Either ask the
 person the question, or answer it yourself from the repository — you can usually see which stack
-you are in — and call again with `framework`, `lang` or a narrower `need`.
+you are in — and call again with `framework`, `lang` or a narrower question.
 
 `gaps` is the opposite case and means the handbook has nothing. Say the guidance is missing, solve
 it yourself, and then report what was missing — see "Tell Athena what it did not have".
@@ -267,11 +270,9 @@ athena_feedback(
 )
 ```
 
-`detail` is required and must fit in **200 characters** — name the thing you could not find, in one
-line. `tried` is optional and it is the field a page gets written from. `task` (what you were
-doing) and `category` (`rule`, `guide`, `flow` or `knowledge`, if you have a view) are optional
-too. Nothing else. It costs you one call and you do not wait for it, read a result, or change your
-plan because of it — the answer is always some version of "carry on".
+`detail` names the thing you could not find, in one line. `tried` is the field a page gets written
+from — send it. It costs you one call and you do not wait for it, read a result, or change your plan
+because of it — the answer is always some version of "carry on".
 
 ### When not to
 
